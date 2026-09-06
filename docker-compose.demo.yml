@@ -1,0 +1,12 @@
+services:
+  openboots:
+    build: .
+    environment:
+      CORE_MODE: demo
+      DATABASE_PATH: /app/data/openboots.db
+      JWT_SECRET: change-me-in-production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
