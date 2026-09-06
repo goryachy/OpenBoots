@@ -5,8 +5,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently \"tsx src/server.js\" \"vite\"",
-    "start": "node index.js",
+    "dev": "concurrently \"node --env-file-if-exists=.env src/server.js\" \"vite\"",
+    "start": "node --env-file-if-exists=.env index.js",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "lint": "eslint src --ext .js,.ts,.tsx",
