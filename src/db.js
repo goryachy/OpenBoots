@@ -23,11 +23,14 @@ CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, custome
 CREATE TABLE IF NOT EXISTS order_lines (order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id), quantity INTEGER NOT NULL CHECK(quantity > 0), PRIMARY KEY(order_id, product_id));
 CREATE TABLE IF NOT EXISTS receiving_sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, location_id INTEGER NOT NULL REFERENCES locations(id), status TEXT NOT NULL DEFAULT 'OPEN', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS receiving_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES receiving_sessions(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0), barcode TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS shared_supplier_barcodes (barcode TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, PRIMARY KEY(barcode, product_id));
+CREATE TABLE IF NOT EXISTS receiving_allocations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES receiving_sessions(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, location_id INTEGER NOT NULL REFERENCES locations(id), quantity INTEGER NOT NULL CHECK(quantity > 0), created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS movements (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL REFERENCES products(id), location_id INTEGER NOT NULL REFERENCES locations(id), type TEXT NOT NULL, quantity INTEGER NOT NULL, related_id TEXT, created_at TEXT NOT NULL, user_id INTEGER REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS inventory_counts (id INTEGER PRIMARY KEY AUTOINCREMENT, location_id INTEGER NOT NULL REFERENCES locations(id), status TEXT NOT NULL DEFAULT 'OPEN', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS count_lines (count_id INTEGER NOT NULL REFERENCES inventory_counts(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id), expected INTEGER NOT NULL, actual INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(count_id, product_id));
 CREATE TABLE IF NOT EXISTS idempotency (scope TEXT NOT NULL, key TEXT NOT NULL, response_json TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(scope, key));
 CREATE TABLE IF NOT EXISTS inventree_order_context (inventree_order_id INTEGER PRIMARY KEY, source_location_id INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS product_meta (product_id INTEGER PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0, archived_at TEXT, archived_reason TEXT);
 `);
 
 const productColumns = db.prepare("PRAGMA table_info(products)").all();
@@ -46,9 +49,19 @@ db.exec(`
     receiving_enabled INTEGER NOT NULL DEFAULT 1,
     sales_enabled INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    archived INTEGER NOT NULL DEFAULT 0
+    archived INTEGER NOT NULL DEFAULT 0,
+    parent_location_id INTEGER,
+    floor_number INTEGER,
+    floor_label TEXT
   );
 `);
+const locationMetaColumns = db.prepare("PRAGMA table_info(location_meta)").all();
+if (!locationMetaColumns.some((column) => column.name === "parent_location_id"))
+  db.exec("ALTER TABLE location_meta ADD COLUMN parent_location_id INTEGER");
+if (!locationMetaColumns.some((column) => column.name === "floor_number"))
+  db.exec("ALTER TABLE location_meta ADD COLUMN floor_number INTEGER");
+if (!locationMetaColumns.some((column) => column.name === "floor_label"))
+  db.exec("ALTER TABLE location_meta ADD COLUMN floor_label TEXT");
 
 // In production product_id is an InvenTree ID, so it must not reference the
 // demo-only products table. Rebuild legacy databases created with that FK.

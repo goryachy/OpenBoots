@@ -12,8 +12,9 @@ export async function api<T = any>(
   if (!response.ok) {
     const error = new Error(
       body.message || "Операция не выполнена.",
-    ) as Error & { code?: string };
+    ) as Error & { code?: string; details?: any };
     error.code = body.error;
+    error.details = body;
     throw error;
   }
   return body;

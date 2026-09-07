@@ -223,6 +223,41 @@ describe("OpenBoots critical workflows", () => {
     ).quantity;
     expect(after - before).toBe(3);
   });
+  it("sets the exact quantity for an active receiving position", async () => {
+    const session = (await postJson("/api/receiving/sessions", {})).body.session;
+    await postJson(`/api/receiving/sessions/${session.id}/scan`, { barcode: "1234567890123" });
+    await postJson(`/api/receiving/sessions/${session.id}/scan`, { barcode: "1234567890123" });
+    const result = await postJson(`/api/receiving/sessions/${session.id}/set-quantity`, { barcode: "1234567890123", quantity: 5 });
+    expect(result.response.status).toBe(200);
+    expect(result.body.quantity).toBe(5);
+  });
+  it("requires a variant selection for a shared supplier barcode", async () => {
+    const variant = await postJson("/api/products", { name: "9060", brand: "New Balance", model: "9060", color: "White", article: "NB9060-WHT", barcode: "1234567890123", allowSharedBarcode: true });
+    expect(variant.response.status).toBe(201);
+    const ambiguous = await postJson("/api/scan", { barcode: "1234567890123" });
+    expect(ambiguous.response.status).toBe(409);
+    expect(ambiguous.body.error).toBe("VARIANT_SELECTION_REQUIRED");
+    const chosen = await postJson("/api/scan", { barcode: "1234567890123", productId: variant.body.product.id });
+    expect(chosen.response.status).toBe(200);
+    expect(chosen.body.product.color).toBe("White");
+  });
+  it("archives a product after writing off its remaining stock and allows restore", async () => {
+    const created = await postJson("/api/products", { name: "Archive test", barcode: "4000000000001" });
+    const session = (await postJson("/api/receiving/sessions", { locationId: 1 })).body.session;
+    await postJson(`/api/receiving/sessions/${session.id}/scan`, { barcode: "4000000000001" });
+    const productId = created.body.product.id;
+    const result = await postJson(`/api/products/${productId}/close`, { action: "writeoff", reason: "Ликвидация" });
+    expect(result.response.status).toBe(200);
+    expect(result.body.product.archived).toBe(true);
+    const archive = await getJson("/api/products?archived=true&inStock=false");
+    expect(archive.body.products.some((product: any) => product.id === productId)).toBe(true);
+    const blockedScan = await postJson("/api/scan", { barcode: "4000000000001" });
+    expect(blockedScan.response.status).toBe(409);
+    expect(blockedScan.body.error).toBe("PRODUCT_ARCHIVED");
+    const restored = await postJson(`/api/products/${productId}/restore`, {});
+    expect(restored.response.status).toBe(200);
+    expect(restored.body.product.archived).toBe(false);
+  });
   it("transfers atomically and rejects insufficient stock", async () => {
     const before = (await getJson("/api/products/1")).body.product.stock;
     const result = await postJson(
@@ -419,6 +454,36 @@ describe("OpenBoots critical workflows", () => {
       headers: { Cookie: cookie },
     });
     expect(protectedDelete.response.status).toBe(409);
+  });
+  it("stores distributed boxes on a selected warehouse floor", async () => {
+    const warehouse = await postJson("/api/locations", { name: "Floor distribution warehouse" });
+    expect(warehouse.response.status).toBe(201);
+    const floor = await postJson(`/api/locations/${warehouse.body.location.id}/floors`, { label: "2 этаж" });
+    expect(floor.response.status).toBe(201);
+    expect(floor.body.location.floorNumber).toBe(2);
+    expect(floor.body.location.fullLocation).toBe("Floor distribution warehouse · 2 этаж");
+
+    const rejectedParent = await postJson("/api/receiving/sessions", { locationId: warehouse.body.location.id });
+    expect(rejectedParent.response.status).toBe(409);
+    expect(rejectedParent.body.error).toBe("LOCATION_REQUIRES_FLOOR");
+
+    const productToReceive = await postJson("/api/products", { name: "Floor test shoe", barcode: "4820000099928" });
+    expect(productToReceive.response.status).toBe(201);
+    const session = await postJson("/api/receiving/sessions", {});
+    expect(session.response.status).toBe(201);
+    const scan = await postJson(`/api/receiving/sessions/${session.body.session.id}/scan`, { barcode: "4820000099928" });
+    expect(scan.response.status).toBe(200);
+    await postJson(`/api/receiving/sessions/${session.body.session.id}/complete`, {});
+    const distribution = await postJson("/api/distributions", {
+      batchId: session.body.session.id,
+      toLocationId: floor.body.location.id,
+      lines: [{ productId: productToReceive.body.product.id, quantity: 1 }],
+    });
+    expect(distribution.response.status).toBe(200);
+    const product = await getJson(`/api/products/${productToReceive.body.product.id}`);
+    const floorStock = product.body.product.stock.find((row: any) => row.location_id === floor.body.location.id);
+    expect(floorStock.quantity).toBe(1);
+    expect(floorStock.shortLocation).toBe("2 эт.");
   });
   it("saves a photo for a product and returns it to the authenticated client", async () => {
     const created = await postJson("/api/products", {

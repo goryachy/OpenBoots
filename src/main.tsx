@@ -3,12 +3,14 @@ import { createRoot } from "react-dom/client";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faArrowDown,
+  faArrowLeft,
   faArrowRightArrowLeft,
   faBarcode,
   faBoxOpen,
   faBoxesPacking,
   faCamera,
   faCartPlus,
+  faCheck,
   faChevronRight,
   faCircleCheck,
   faClipboardList,
@@ -42,6 +44,15 @@ type Location = {
   kind?: "WAREHOUSE" | "UNASSIGNED";
   receivingEnabled?: boolean;
   salesEnabled?: boolean;
+  parentLocationId?: number | null;
+  warehouseId?: number;
+  warehouseName?: string;
+  floorNumber?: number | null;
+  floorName?: string | null;
+  fullLocation?: string;
+  shortLocation?: string;
+  isFloor?: boolean;
+  hasFloors?: boolean;
 };
 type Product = {
   id: number;
@@ -60,6 +71,7 @@ type Product = {
   stock?: any[];
   movements?: any[];
   photoUrl?: string | null;
+  archived?: boolean;
 };
 const Icon = ({ icon, className }: { icon: any; className?: string }) => (
   <FontAwesomeIcon icon={icon} className={className} />
@@ -117,6 +129,8 @@ function Scanner({
   const scanQueue = useRef(Promise.resolve());
   const [manual, setManual] = useState("");
   const [manualOpen, setManualOpen] = useState(false);
+  const [scanArmed, setScanArmed] = useState(variant !== "receive");
+  const scanArmedRef = useRef(variant !== "receive");
   const [internalCamera, setInternalCamera] = useState(false);
   const camera = cameraOpen ?? internalCamera;
   const closeCamera = () => {
@@ -125,6 +139,7 @@ function Scanner({
   };
   const [message, setMessage] = useState("Готов к сканированию");
   const last = useRef("");
+  useEffect(() => { scanArmedRef.current = scanArmed; }, [scanArmed]);
   useEffect(() => {
     onScanRef.current = (barcode) => {
       scanQueue.current = scanQueue.current
@@ -141,6 +156,7 @@ function Scanner({
     let detectionInProgress = false;
     if (!camera) return;
     const accept = (code: string) => {
+      if (variant === "receive" && !scanArmedRef.current) return;
       if (!code) {
         missedFrames += 1;
         if (missedFrames >= 4) last.current = "";
@@ -149,6 +165,7 @@ function Scanner({
       missedFrames = 0;
       if (code === last.current) return;
       last.current = code;
+      if (variant === "receive") setScanArmed(false);
       onScanRef.current(code);
       navigator.vibrate?.(60);
       setMessage(`Сканирован ${code}`);
@@ -282,8 +299,11 @@ function Scanner({
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (manual.trim()) onScan(manual.trim());
+        const value = manual.trim();
+        if (!value) return;
+        onScan(value);
         setManual("");
+        if (variant === "receive") setManualOpen(false);
       }}
     >
       <input
@@ -292,10 +312,8 @@ function Scanner({
         placeholder="Введите штрихкод"
         inputMode="numeric"
       />
-      <button className="button" type="submit">
-        <Icon icon={faBarcode} />
-        Сканировать
-      </button>
+      <button className="button primary" type="submit" aria-label="Подтвердить ручной ввод"><Icon icon={faCheck} /></button>
+      {variant === "receive" && <button className="button ghost" type="button" aria-label="Отменить ручной ввод" onClick={() => { setManual(""); setManualOpen(false); }}><Icon icon={faXmark} /></button>}
     </form>
   );
   const toggleCamera = () => {
@@ -305,16 +323,25 @@ function Scanner({
   };
   const controls = variant === "receive" ? (
     <div className="scanner-receive-controls">
-      {!camera && (
-        <button className="button dark" onClick={toggleCamera}>
-          <Icon icon={faCamera} />
-          Включить камеру
-        </button>
+      {manualOpen ? (
+        <div className="scanner-receive-row scanner-receive-row--manual">
+          {manualForm}
+        </div>
+      ) : (
+        <div className="scanner-receive-row">
+          <button className="button ghost scanner-action manual-entry-link" onClick={() => setManualOpen(true)}>
+            <Icon icon={faPen} />
+            Ввести вручную
+          </button>
+          <button
+            className={`button dark scanner-action scanner-scan-button ${camera && scanArmed ? "armed" : ""}`}
+            onClick={camera ? () => { last.current = ""; setScanArmed(true); setMessage("Наведите код в рамку"); } : toggleCamera}
+          >
+            <Icon icon={camera ? faBarcode : faCamera} />
+            {camera ? (scanArmed ? "Ищем код…" : "Сканировать") : "Включить камеру"}
+          </button>
+        </div>
       )}
-      <button className="manual-entry-link" onClick={() => setManualOpen((value) => !value)}>
-        Ввести штрихкод вручную
-      </button>
-      {manualOpen && manualForm}
     </div>
   ) : (
     <div className="scanner-row">
@@ -443,7 +470,8 @@ function ProductCard({
             {stock.map((item: any) => (
               <span key={item.location_id}>
                 <Icon icon={faWarehouse} />
-                {item.name}: <b>{item.quantity}</b>
+                {item.fullLocation || item.name}: <b>{item.quantity}</b>
+                {item.shortLocation && item.shortLocation !== item.fullLocation && <small className="location-short">{item.shortLocation}</small>}
               </span>
             ))}
           </div>
@@ -471,6 +499,13 @@ function ProductDetail({
   const [editing, setEditing] = useState(false);
   const [editFields, setEditFields] = useState<any>(product);
   const [editText, setEditText] = useState("");
+  const [closing, setClosing] = useState(false);
+  const [closeAction, setCloseAction] = useState<"archive" | "move" | "writeoff">("archive");
+  const [closeLocationId, setCloseLocationId] = useState(0);
+  const [closeReason, setCloseReason] = useState("");
+  const [locations, setLocations] = useState<Location[]>([]);
+  useEffect(() => { api<{ locations: Location[] }>("/api/locations").then((r) => { setLocations(r.locations); setCloseLocationId(r.locations[0]?.id || 0); }); }, []);
+  const stockTotal = currentProduct.stock?.reduce((sum: number, item: any) => sum + item.quantity, 0) || 0;
   useEffect(() => {
     setCurrentProduct(product);
     setEditFields(product);
@@ -503,6 +538,7 @@ function ProductDetail({
       </button>
       <div className="hero-card">
         <p className="eyebrow">ТОВАР #{currentProduct.id}</p>
+        {currentProduct.archived && <p className="toast">Товар в архиве</p>}
         <h2>
           {currentProduct.brand} {currentProduct.name}
         </h2>
@@ -525,7 +561,10 @@ function ProductDetail({
       <div className="stock-list">
         {currentProduct.stock?.map((s: any) => (
           <div key={s.location_id}>
-            <span>{s.name}</span>
+            <span>
+              <b>{s.fullLocation || s.name}</b>
+              {s.shortLocation && s.shortLocation !== s.fullLocation && <small className="location-short">{s.shortLocation}</small>}
+            </span>
             <b>{s.quantity}</b>
           </div>
         ))}
@@ -547,15 +586,12 @@ function ProductDetail({
         ))}
       </div>
       <div className="action-row">
+        {currentProduct.archived ? <button className="button primary" onClick={async () => { try { const result=await post(`/api/products/${currentProduct.id}/restore`, {}); setCurrentProduct(result.product); setStatus("Товар восстановлен."); } catch (error: any) { setStatus(error.message); } }}>Восстановить</button> : null}
         <button className="button" onClick={() => { setEditFields(currentProduct); setEditing(true); }}>
           <Icon icon={faPen} /> Редактировать
         </button>
-        <button className="button danger" onClick={async () => {
-          if (!window.confirm("Удалить этот товар? Действие нельзя отменить.")) return;
-          try { await api(`/api/products/${currentProduct.id}`, { method: "DELETE" }); onBack(); }
-          catch (error: any) { setStatus(error.message); }
-        }}>
-          <Icon icon={faTrash} /> Удалить товар
+        <button className="button danger" onClick={() => setClosing(true)}>
+          <Icon icon={faTrash} /> Закрыть товар
         </button>
         <a
           className="button"
@@ -600,75 +636,97 @@ function ProductDetail({
         try { const result = await api<{ product: Product }>(`/api/products/${currentProduct.id}`, { method: "PATCH", body: JSON.stringify(editFields) }); setCurrentProduct(result.product); setEditFields(result.product); setStatus("Товар сохранён."); setEditing(false); }
         catch (error: any) { setStatus(error.message); }
       }} />}
+      {closing && <div className="modal"><div className="modal-card"><p className="eyebrow">ЗАКРЫТЬ ТОВАР</p><h3>{stockTotal ? `Остаток: ${stockTotal} коробок` : "Остаток отсутствует"}</h3>{stockTotal ? <><label><input type="radio" checked={closeAction === "move"} onChange={() => setCloseAction("move")} /> Переместить остаток</label><label><input type="radio" checked={closeAction === "writeoff"} onChange={() => setCloseAction("writeoff")} /> Списать остаток</label>{closeAction === "move" && <label>Куда<select value={closeLocationId} onChange={(e) => setCloseLocationId(Number(e.target.value))}>{locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>}<label>Причина<textarea value={closeReason} onChange={(e) => setCloseReason(e.target.value)} placeholder="Например, возврат поставщику" /></label></> : <p className="muted">Товар будет скрыт из обычного каталога, но останется в архиве с полной историей.</p>}<div className="action-row"><button className="button ghost" onClick={() => setClosing(false)}>Отмена</button><button className="button primary" onClick={async () => { try { const result=await post(`/api/products/${currentProduct.id}/close`, { action: stockTotal ? closeAction : "archive", toLocationId: closeAction === "move" ? closeLocationId : undefined, reason: closeReason }); setCurrentProduct(result.product); setClosing(false); setStatus("Товар перемещён в архив."); } catch (error: any) { setStatus(error.message); } }}>Закрыть и архивировать</button></div></div></div>}
     </section>
   );
 }
 
 function Receive({
   locations,
-  onOpenProduct,
+  onOpenProduct, onFinished, onBack,
+  onLocationsChanged,
 }: {
   locations: Location[];
   onOpenProduct: (p: Product) => void;
+  onFinished: (session: any, direct: boolean) => void;
+  onBack: () => void;
+  onLocationsChanged: () => Promise<void>;
 }) {
-  const [locationId, setLocationId] = useState(locations[0]?.id || 0);
+  const receivingLocations = locations.filter((location) => location.receivingEnabled !== false && location.kind !== "UNASSIGNED" && (!location.hasFloors || location.isFloor));
+  const [locationId, setLocationId] = useState(receivingLocations[0]?.id || 0);
   const [directReceive, setDirectReceive] = useState(false);
   const [session, setSession] = useState<any>();
   const sessionRef = useRef<any>(undefined);
   const [last, setLast] = useState<any>();
+  const [active, setActive] = useState<any>();
+  const [mode, setMode] = useState<"position" | "conveyor">("position");
+  const [review, setReview] = useState(false);
+  const [completed, setCompleted] = useState<any>();
+  const [addColor, setAddColor] = useState(false);
+  const [colorFields, setColorFields] = useState<any>();
+  const [variants, setVariants] = useState<any>();
+  const [archivedScan, setArchivedScan] = useState<any>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [total, setTotal] = useState(0);
   const [received, setReceived] = useState<Record<number, number>>({});
+  const [receivedProducts, setReceivedProducts] = useState<Record<number, Product>>({});
+  const [receivedBarcodes, setReceivedBarcodes] = useState<Record<number, string>>({});
   const [unknown, setUnknown] = useState("");
   const [bulk, setBulk] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   const [photoUploadingFor, setPhotoUploadingFor] = useState<number | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [createWarehouseOpen, setCreateWarehouseOpen] = useState(false);
+  const [warehouseForm, setWarehouseForm] = useState({ name: "", description: "" });
+  const [warehouseSaving, setWarehouseSaving] = useState(false);
+  const [warehouseError, setWarehouseError] = useState("");
   const photoInput = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState("");
 
   useEffect(() => {
     if (
       !sessionRef.current &&
-      locations.length &&
-      !locations.some((location) => location.id === locationId)
+      receivingLocations.length &&
+      !receivingLocations.some((location) => location.id === locationId)
     ) {
-      setLocationId(locations[0].id);
+      setLocationId(receivingLocations[0].id);
     }
-  }, [locations, locationId]);
+  }, [receivingLocations, locationId]);
+  useEffect(() => {
+    if (!receivingLocations.length && directReceive) setDirectReceive(false);
+  }, [receivingLocations.length, directReceive]);
 
-  const scan = async (barcode: string) => {
-    let createdSession = false;
+  const startPosition = async () => {
+    if (sessionRef.current) return;
+    try {
+      if (directReceive && !locationId) throw new Error("Выберите склад для прямой приёмки.");
+      const created = await post("/api/receiving/sessions", directReceive ? { locationId } : {});
+      sessionRef.current = created.session; setSession(created.session);
+    } catch (e: any) { setToast(e.message); }
+  };
+  const scan = async (barcode: string, productId?: number) => {
     try {
       setToast("");
       let s = sessionRef.current;
       if (!s) {
-        if (directReceive && !locationId)
-          throw new Error("Выберите склад для прямой приёмки.");
-        const created = await post("/api/receiving/sessions", directReceive ? { locationId } : {});
-        s = created.session;
-        createdSession = true;
-        sessionRef.current = s;
-        setSession(s);
+        await startPosition(); s = sessionRef.current;
+        if (!s) return;
       }
-      const r = await post(`/api/receiving/sessions/${s.id}/scan`, { barcode }, { "Idempotency-Key": crypto.randomUUID() });
-      setLast(r);
+      if (mode === "position" && active && barcode !== active.barcode) {
+        setToast("Это другой товар. Сначала завершите текущую позицию кнопкой «Следующая модель»."); return;
+      }
+      const r = await post(`/api/receiving/sessions/${s.id}/scan`, { barcode, productId: productId || (active?.barcode === barcode ? active.product.id : undefined) }, { "Idempotency-Key": crypto.randomUUID() });
+      setLast(r); if (mode === "position") setActive(r);
       setTotal((v) => v + 1);
       setReceived((current) => ({ ...current, [r.product.id]: (current[r.product.id] || 0) + 1 }));
+      setReceivedProducts((current) => ({ ...current, [r.product.id]: r.product }));
+      setReceivedBarcodes((current) => ({ ...current, [r.product.id]: barcode }));
     } catch (e: any) {
-      if (e.code === "UNKNOWN_BARCODE") {
-        if (createdSession && sessionRef.current) {
-          try {
-            await post(
-              `/api/receiving/sessions/${sessionRef.current.id}/complete`,
-              {},
-            );
-          } catch {
-            // The empty session is harmless; do not hide the unknown-product flow.
-          } finally {
-            sessionRef.current = undefined;
-            setSession(undefined);
-          }
-        }
+      if (e.code === "PRODUCT_ARCHIVED") {
+        setArchivedScan({ barcode, product: e.details?.product });
+      } else if (e.code === "VARIANT_SELECTION_REQUIRED") {
+        setVariants({ barcode, products: e.products || [] });
+      } else if (e.code === "UNKNOWN_BARCODE") {
         setUnknown(barcode);
         setToast("");
       } else
@@ -695,6 +753,11 @@ function Receive({
           ? { ...current, product: result.product }
           : current,
       );
+      setActive((current: any) =>
+        current?.product?.id === productId
+          ? { ...current, product: result.product }
+          : current,
+      );
       setToast("Фото товара сохранено.");
     } catch (error: any) {
       setToast(error.message || "Не удалось сохранить фото.");
@@ -703,8 +766,28 @@ function Receive({
       if (photoInput.current) photoInput.current.value = "";
     }
   };
+  const lines = Object.entries(received).filter(([, quantity]) => quantity > 0);
+  const editQuantity = async () => {
+    const value = Number(bulk); if (!active || !Number.isInteger(value) || value < 0) return;
+    try { await post(`/api/receiving/sessions/${sessionRef.current.id}/set-quantity`, { barcode: active.barcode, productId: active.product.id, quantity: value });
+      setReceived((current) => ({ ...current, [active.product.id]: value })); setTotal((v) => v + value - (received[active.product.id] || 0)); setBulkOpen(false); setBulk("");
+    } catch (e: any) { setToast(e.message); }
+  };
+  const adjustSummaryQuantity = async (product: Product, barcode: string, quantity: number) => {
+    if (quantity < 0) return;
+    try {
+      await post(`/api/receiving/sessions/${sessionRef.current.id}/set-quantity`, { barcode, productId: product.id, quantity });
+      const previous = received[product.id] || 0;
+      setReceived((current) => ({ ...current, [product.id]: quantity }));
+      setTotal((current) => current + quantity - previous);
+    } catch (error: any) { setToast(error.message || "Не удалось изменить количество."); }
+  };
+  const setReceivingCamera = (open: boolean) => setCameraOpen(open);
+  if (completed) return <section className="page receive-page"><div className="success-icon">✓</div><p className="eyebrow">ПРИЁМКА ЗАВЕРШЕНА</p><h2>Приёмка #{completed.id}</h2><p className="muted">{completed.total} коробок</p>{completed.direct ? <button className="button primary wide" onClick={() => onFinished(completed, true)}>Открыть остатки склада</button> : <><p>Что сделать дальше?</p><button className="button primary wide" onClick={() => onFinished(completed, false)}>Распределить сейчас</button><button className="button ghost wide" onClick={() => onFinished(completed, true)}>Распределить позже</button></>}</section>;
+  if (review) return <section className="page receive-page"><p className="eyebrow">СВОДКА ПРИЁМКИ</p><h2>Приёмка #{session?.id}</h2><div className="receiving-summary-total receiving-summary-total--top"><b>{total} коробок · {lines.length} позиций</b><span>Назначение: {directReceive ? locations.find((l) => l.id === locationId)?.name : "Нераспределено"}</span></div><div className="receiving-summary">{lines.map(([id, quantity]) => { const product=receivedProducts[Number(id)]; const barcode=receivedBarcodes[Number(id)]; return <article key={id} className="receiving-summary-item"><div className="receiving-summary-photo">{product?.photoUrl ? <img src={product.photoUrl} alt="" /> : <Icon icon={faBoxOpen} />}</div><div className="receiving-summary-info">{product ? <><b>{product.brand} {product.name}</b><small>{product.color || "Цвет не указан"} · Артикул: {product.article || "—"}</small>{product.sizes?.length ? <small>Размеры: {product.sizes.map((size: any) => size.size).join("–")}</small> : null}</> : <b>Принятая позиция</b>}</div><div className="receiving-summary-stepper"><button disabled={!product || quantity <= 0} onClick={() => product && adjustSummaryQuantity(product, barcode, Number(quantity) - 1)}>−</button><strong>{quantity}<small>коробок</small></strong><button disabled={!product || !barcode} onClick={() => product && adjustSummaryQuantity(product, barcode, Number(quantity) + 1)}>+</button></div></article>; })}</div><div className="receiving-summary-actions"><button className="button ghost wide" onClick={() => setReview(false)}>Назад к сканированию</button><button className="button primary wide" onClick={async () => { await post(`/api/receiving/sessions/${session.id}/complete`, {}); setCompleted({ id: session.id, total, direct: directReceive }); }}>Завершить приёмку</button></div></section>;
   return (
     <section className={`page receive-page ${session ? "receive-page--active" : ""}`}>
+      {total === 0 && <button className="button ghost receive-back" onClick={onBack}><Icon icon={faArrowLeft} />Вернуться</button>}
       <div className="page-head">
         <div>
           <p className="eyebrow">ПРИЁМКА</p>
@@ -712,30 +795,30 @@ function Receive({
         </div>
         <span className="counter">{total}</span>
       </div>
-      {!session && (directReceive ? (
+      {!session && <div className="receive-settings"><div className="receive-current-settings"><span><small>Назначение</small>{directReceive && receivingLocations.some((location) => location.id === locationId) ? `Сразу на склад · ${receivingLocations.find((location) => location.id === locationId)?.fullLocation || receivingLocations.find((location) => location.id === locationId)?.name}` : "Нераспределено"}</span><span><small>Режим</small>{mode === "position" ? "По позиции" : "Конвейер"}</span><button aria-label="Настройки сканирования" onClick={() => setSettingsOpen((value) => !value)}><Icon icon={faGear} /></button></div>{settingsOpen && <div className="receive-settings-panel"><p className="eyebrow">НАЗНАЧЕНИЕ</p><div className="receive-options"><button className={!directReceive ? "selected" : ""} onClick={() => setDirectReceive(false)}><i />Нераспределено</button>{receivingLocations.length ? <button className={directReceive ? "selected" : ""} onClick={() => setDirectReceive(true)}><i />Сразу на склад</button> : <span className="receive-destination-add"><button disabled><i />Сразу на склад</button><button className="receive-add-location" aria-label="Добавить склад" title="Добавить склад" onClick={() => { setWarehouseForm({ name: "", description: "" }); setWarehouseError(""); setCreateWarehouseOpen(true); }}><Icon icon={faPlus} /></button></span>}</div>{!receivingLocations.length && <p className="receive-settings-hint">Сначала добавьте склад в настройках мест.</p>}<p className="eyebrow">РЕЖИМ СКАНИРОВАНИЯ</p><div className="receive-options"><button className={mode === "position" ? "selected" : ""} onClick={() => setMode("position")}><i />По позиции</button><button className={mode === "conveyor" ? "selected" : ""} onClick={() => setMode("conveyor")}><i />Конвейер</button></div></div>}</div>}
+      {!session && settingsOpen && directReceive && receivingLocations.length ? (
           <label>
             Склад приёмки
             <select
               value={locationId}
               onChange={(e) => setLocationId(Number(e.target.value))}
             >
-              {locations.filter((l) => l.receivingEnabled !== false && l.kind !== "UNASSIGNED").map((l) => (
-                <option key={l.id} value={l.id}>{l.name}</option>
+              {receivingLocations.map((l) => (
+                <option key={l.id} value={l.id}>{l.fullLocation || l.name}</option>
               ))}
             </select>
-            <button className="receive-direct-link" type="button" onClick={() => setDirectReceive(false)}>Принимать в «Нераспределено»</button>
           </label>
         ) : (
-          <p className="muted">Принимаем в «Нераспределено». Склад выберете позже в распределении. <button className="receive-direct-link" type="button" onClick={() => setDirectReceive(true)}>Сразу на склад</button></p>
-        ))}
+          <p className="muted">Товар будет принят в «Нераспределено» до распределения.</p>
+        )}
       <Scanner
         variant="receive"
         onScan={scan}
         cameraOpen={cameraOpen}
-        onCameraChange={setCameraOpen}
+        onCameraChange={setReceivingCamera}
       />
       {toast && <div className="toast">{toast}</div>}
-      {last && (
+      {active && (
         <article className="receive-product-card">
           <input
             ref={photoInput}
@@ -747,12 +830,12 @@ function Receive({
           />
           <div className="receive-product-top">
             <div className="receive-photo">
-              {last.product.photoUrl ? (
-                <img src={last.product.photoUrl} alt={last.product.name} />
+              {active.product.photoUrl ? (
+                <img src={active.product.photoUrl} alt={active.product.name} />
               ) : (
                 <button
                   className="receive-add-photo"
-                  disabled={photoUploadingFor === last.product.id}
+                  disabled={photoUploadingFor === active.product.id}
                   aria-label={photoUploadingFor === last.product.id ? "Сохраняем фото товара" : "Добавить фото товара"}
                   title={photoUploadingFor === last.product.id ? "Сохраняем фото" : "Добавить фото"}
                   onClick={() => photoInput.current?.click()}
@@ -764,9 +847,9 @@ function Receive({
             </div>
             <div className="receive-product-summary">
               <div className="receive-scan-meta"><span><Icon icon={faCircleCheck} /> Последний скан</span><time>только что</time></div>
-              <h3>{last.product.brand} {last.product.name}</h3>
-              <p>{last.product.color} · {last.product.sizes?.map((size: any) => size.size).join("–") || "Размер не указан"}</p>
-              <p>Артикул: {last.product.article || "—"}</p>
+              <h3>{active.product.brand} {active.product.name}</h3>
+              <p>{active.product.color} · {active.product.sizes?.map((size: any) => size.size).join("–") || "Размер не указан"}</p>
+              <p>Артикул: {active.product.article || "—"}</p>
             </div>
           </div>
           <div className="receive-quantity-row">
@@ -774,13 +857,13 @@ function Receive({
             <div className="receive-stepper">
               <button aria-label="Убрать одну коробку" onClick={async () => {
               try {
-                await post(`/api/receiving/sessions/${sessionRef.current?.id}/remove-one`, { barcode: last.barcode || last.product.barcode }, { "Idempotency-Key": crypto.randomUUID() });
+                await post(`/api/receiving/sessions/${sessionRef.current?.id}/remove-one`, { barcode: active.barcode, productId: active.product.id }, { "Idempotency-Key": crypto.randomUUID() });
                 setTotal((value) => Math.max(0, value - 1));
-                setReceived((current) => ({ ...current, [last.product.id]: Math.max(0, (current[last.product.id] || 0) - 1) }));
+                setReceived((current) => ({ ...current, [active.product.id]: Math.max(0, (current[active.product.id] || 0) - 1) }));
               } catch (error: any) { setToast(error.message || "Не удалось убрать коробку."); }
               }}>−</button>
-              <strong aria-live="polite">{received[last.product.id] || 0}</strong>
-              <button aria-label="Добавить одну коробку" onClick={() => scan(last.barcode || last.product.barcode)}>+</button>
+              <strong aria-live="polite">{received[active.product.id] || 0}</strong>
+              <button aria-label="Добавить одну коробку" onClick={() => scan(active.barcode)}>+</button>
               <button className="receive-edit-quantity" aria-label="Ввести количество" onClick={() => setBulkOpen((value) => !value)}><Icon icon={faPen} /></button>
             </div>
           </div>
@@ -788,63 +871,29 @@ function Receive({
               event.preventDefault();
                 if (!bulk) return;
                 try {
-                  const r = await post(
-                    `/api/receiving/sessions/${sessionRef.current?.id}/quantity`,
-                    {
-                      barcode: last.barcode || last.product.barcode,
-                      quantity: Number(bulk),
-                    },
-                    { "Idempotency-Key": crypto.randomUUID() },
-                  );
-                  setLast(r);
-                  setTotal((v) => v + r.quantity);
-                  setReceived((current) => ({ ...current, [r.product.id]: (current[r.product.id] || 0) + r.quantity }));
-                  setBulk("");
-                  setBulkOpen(false);
+                  await editQuantity();
                 } catch (e: any) {
                   setToast(e.message || "Не удалось добавить количество.");
                 }
             }}>
-              <input autoFocus placeholder="Количество коробок" value={bulk} onChange={(e) => setBulk(e.target.value)} inputMode="numeric" />
-              <button className="button primary" type="submit">Добавить</button>
+              <input autoFocus placeholder="Итого коробок в позиции" value={bulk} onChange={(e) => setBulk(e.target.value)} inputMode="numeric" />
+              <button className="button primary" type="submit">Сохранить</button>
             </form>}
           <div className="receive-card-actions">
-            <button onClick={() => onOpenProduct(last.product)}><Icon icon={faPalette} /> Добавить цвет</button>
-            <button onClick={() => onOpenProduct(last.product)}><Icon icon={faBoxOpen} /> Открыть товар <Icon icon={faChevronRight} /></button>
+            <button onClick={() => { setColorFields({ ...active.product, barcode: active.barcode, internalBarcode: "", color: "", photoUrl: undefined, allowSharedBarcode: Boolean(active.barcode) }); setAddColor(true); }}><Icon icon={faPalette} /> + Добавить цвет</button>
+            <button onClick={() => { setActive(undefined); setBulkOpen(false); }}>Следующая модель</button>
           </div>
         </article>
       )}
-      {(session || cameraOpen) && (
+      {session && (
         <div className="action-row">
-          <button
-            className="button ghost"
-            onClick={() => setCameraOpen((value) => !value)}
-          >
-            <Icon icon={cameraOpen ? faXmark : faCamera} />
-            {cameraOpen ? "Выкл камеру" : "Вкл камеру"}
-          </button>
           <button
             className="button primary"
             disabled={!session || total === 0}
-            onClick={async () => {
-              try {
-                await post(
-                  `/api/receiving/sessions/${sessionRef.current?.id}/complete`,
-                  {},
-                );
-                sessionRef.current = undefined;
-                setSession(undefined);
-                setLast(undefined);
-                setTotal(0);
-                setReceived({});
-                setToast("Приёмка завершена");
-              } catch (e: any) {
-                setToast(e.message || "Не удалось завершить приёмку.");
-              }
-            }}
+            onClick={() => setReview(true)}
           >
             <Icon icon={faCircleCheck} />
-            Завершить
+            Завершить приёмку
           </button>
         </div>
       )}
@@ -855,6 +904,10 @@ function Receive({
           onReceive={() => scan(unknown)}
         />
       )}
+      {variants && <div className="modal"><div className="modal-card"><p className="eyebrow">ШТРИХКОД СООТВЕТСТВУЕТ НЕСКОЛЬКИМ ЦВЕТАМ</p><h3>Выберите вариант</h3>{variants.products.map((product: Product) => <button key={product.id} className="button wide" onClick={() => { const code = variants.barcode; setVariants(undefined); scan(code, product.id); }}>{product.brand} {product.name} / {product.color}</button>)}<button className="link" onClick={() => setVariants(undefined)}>Отмена</button></div></div>}
+      {archivedScan?.product && <div className="modal"><div className="modal-card"><p className="eyebrow">ТОВАР В АРХИВЕ</p><h3>{archivedScan.product.brand} {archivedScan.product.name}</h3><p className="muted">{archivedScan.product.color} · {archivedScan.product.article}</p><p>Как продолжить?</p><button className="button primary wide" onClick={async () => { try { await post(`/api/products/${archivedScan.product.id}/restore`, {}); const code=archivedScan.barcode; setArchivedScan(undefined); scan(code, archivedScan.product.id); } catch (error: any) { setToast(error.message); } }}>Восстановить с остатком</button><button className="button wide" onClick={async () => { try { await post(`/api/products/${archivedScan.product.id}/restore`, { resetStock:true, reason:"Новая приёмка после архива" }); const code=archivedScan.barcode; setArchivedScan(undefined); scan(code, archivedScan.product.id); } catch (error: any) { setToast(error.message); } }}>Начать заново с нуля</button><button className="link" onClick={() => setArchivedScan(undefined)}>Отмена</button></div></div>}
+      {addColor && colorFields && <ProductForm title="НОВЫЙ ЦВЕТ" fields={colorFields} setFields={setColorFields} text="" setText={() => {}} onCancel={() => setAddColor(false)} onSave={async () => { try { const created = await post("/api/products", colorFields); const barcode = created.product.internalBarcode || created.product.internal_barcode; const r = await post(`/api/receiving/sessions/${sessionRef.current.id}/scan`, { barcode }, { "Idempotency-Key": crypto.randomUUID() }); setActive(r); setLast(r); setTotal((v) => v + 1); setReceived((current) => ({ ...current, [r.product.id]: 1 })); setReceivedProducts((current) => ({ ...current, [r.product.id]: r.product })); setReceivedBarcodes((current) => ({ ...current, [r.product.id]: barcode })); setAddColor(false); } catch (e: any) { setToast(e.message); } }} />}
+      {createWarehouseOpen && <div className="modal"><div className="modal-card receive-create-warehouse"><p className="eyebrow">НОВЫЙ СКЛАД</p><h3>Добавить место хранения</h3><label>Название склада<input autoFocus value={warehouseForm.name} onChange={(event) => setWarehouseForm((current) => ({ ...current, name: event.target.value }))} placeholder="Например, Шоурум" /></label><label>Описание<input value={warehouseForm.description} onChange={(event) => setWarehouseForm((current) => ({ ...current, description: event.target.value }))} placeholder="Необязательно" /></label>{warehouseError && <div className="toast error-toast">{warehouseError}</div>}<div className="action-row"><button className="button ghost" disabled={warehouseSaving} onClick={() => setCreateWarehouseOpen(false)}>Отмена</button><button className="button primary" disabled={warehouseSaving || !warehouseForm.name.trim()} onClick={async () => { try { setWarehouseSaving(true); setWarehouseError(""); const result = await post("/api/locations", { name: warehouseForm.name.trim(), description: warehouseForm.description.trim() }); await onLocationsChanged(); setLocationId(result.location.id); setDirectReceive(true); setCreateWarehouseOpen(false); } catch (error: any) { setWarehouseError(error.message || "Не удалось добавить склад."); } finally { setWarehouseSaving(false); } }}>Добавить склад</button></div></div></div>}
     </section>
   );
 }
@@ -1142,18 +1195,19 @@ function Stock({ onOpen }: { onOpen: (p: Product) => void }) {
   const [color, setColor] = useState("");
   const [size, setSize] = useState("");
   const [only, setOnly] = useState(true);
+  const [archived, setArchived] = useState(false);
   const [items, setItems] = useState<Product[]>([]);
   const brands = useBrands();
   useEffect(() => {
     const id = setTimeout(
       () =>
         api<{ products: Product[] }>(
-          `/api/products?query=${encodeURIComponent(q)}&brand=${encodeURIComponent(brand)}&color=${encodeURIComponent(color)}&size=${encodeURIComponent(size)}&inStock=${only}`,
+          `/api/products?query=${encodeURIComponent(q)}&brand=${encodeURIComponent(brand)}&color=${encodeURIComponent(color)}&size=${encodeURIComponent(size)}&inStock=${only}&archived=${archived}`,
         ).then((r) => setItems(r.products)),
       150,
     );
     return () => clearTimeout(id);
-  }, [q, brand, color, size, only]);
+  }, [q, brand, color, size, only, archived]);
   return (
     <section className="page">
       <div className="page-head">
@@ -1206,6 +1260,7 @@ function Stock({ onOpen }: { onOpen: (p: Product) => void }) {
         />{" "}
         Только в наличии
       </label>
+      <label className="toggle"><input type="checkbox" checked={archived} onChange={(e) => setArchived(e.target.checked)} /> Архив</label>
       <div className="product-list">
         {items.map((p) => (
           <ProductCard
@@ -1314,11 +1369,21 @@ function Transfer({ locations }: { locations: Location[] }) {
   );
 }
 
-function Distribution({ locations }: { locations: Location[] }) {
-  const destinations = locations.filter((location) => location.kind !== "UNASSIGNED");
-  const [to, setTo] = useState(destinations[0]?.id || 0);
+function Distribution({ locations, batch }: { locations: Location[]; batch?: any }) {
+  const destinations = locations.filter((location) => location.kind !== "UNASSIGNED" && !location.isFloor);
+  const [warehouseId, setWarehouseId] = useState(destinations[0]?.id || 0);
+  const floors = locations.filter((location) => location.isFloor && location.warehouseId === warehouseId);
+  const [floorId, setFloorId] = useState(floors[0]?.id || 0);
+  const to = floorId || warehouseId;
   const [lines, setLines] = useState<any[]>([]);
   const [status, setStatus] = useState("");
+  const [selecting, setSelecting] = useState(Boolean(batch));
+  const [selected, setSelected] = useState<number[]>([]);
+  const [activeBatch, setActiveBatch] = useState<any>(batch);
+  const [batches, setBatches] = useState<any[]>([]);
+  useEffect(() => { api<any>("/api/receiving/batches").then((r) => { setBatches(r.batches); const selectedBatch = batch || r.batches[0]; setActiveBatch(selectedBatch); setLines(selectedBatch?.lines || []); setSelected((selectedBatch?.lines || []).map((line: any) => line.product.id)); }).catch((e) => setStatus(e.message)); }, [batch]);
+  useEffect(() => { if (!destinations.some((location) => location.id === warehouseId)) setWarehouseId(destinations[0]?.id || 0); }, [locations, warehouseId]);
+  useEffect(() => { setFloorId(floors[0]?.id || 0); }, [warehouseId, locations.length]);
   const scan = async (barcode: string) => {
     try {
       const result = await post("/api/scan", { barcode });
@@ -1332,18 +1397,20 @@ function Distribution({ locations }: { locations: Location[] }) {
     } catch (error: any) { setStatus(error.message); }
   };
   return <section className="page">
-    <div className="page-head"><div><p className="eyebrow">РАСПРЕДЕЛЕНИЕ</p><h2>Из «Нераспределено»</h2></div><span className="counter">{lines.reduce((sum, line) => sum + line.quantity, 0)}</span></div>
-    <label>Куда распределяем<select value={to} onChange={(event) => setTo(Number(event.target.value))}>{destinations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>
-    <p className="muted">Выберите склад один раз, затем сканируйте коробки.</p>
-    <Scanner onScan={scan} />
+    <div className="page-head"><div><p className="eyebrow">РАСПРЕДЕЛЕНИЕ</p><h2>{activeBatch ? `Приёмка #${activeBatch.id}` : "Из «Нераспределено»"}</h2>{activeBatch && <p>{activeBatch.total} коробок · выберите позиции для распределения</p>}</div><span className="counter">{lines.reduce((sum, line) => sum + line.quantity, 0)}</span></div>
+    {batches.length > 1 && <label>Партия приёмки<select value={activeBatch?.id || ""} onChange={(event) => { const selectedBatch = batches.find((item) => item.id === Number(event.target.value)); setActiveBatch(selectedBatch); setLines(selectedBatch?.lines || []); setSelected((selectedBatch?.lines || []).map((line: any) => line.product.id)); }}>{batches.map((item) => <option key={item.id} value={item.id}>Приёмка #{item.id} · {item.total} коробок</option>)}</select></label>}
+    <div className="distribution-destination"><label>Склад<select value={warehouseId} onChange={(event) => setWarehouseId(Number(event.target.value))}>{destinations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></label>{floors.length ? <label>Этаж<select value={floorId} onChange={(event) => setFloorId(Number(event.target.value))}>{floors.map((location) => <option key={location.id} value={location.id}>{location.floorName || location.name}</option>)}</select></label> : <p className="muted distribution-floor-hint">У этого склада этажи ещё не настроены — товар будет перемещён в склад.</p>}</div>
+    <p className="muted">Выберите позиции из «Нераспределено» — повторно сканировать коробки не нужно.</p>
     {status && <div className="toast">{status}</div>}
-    <div className="draft-list">{lines.map((line) => <div key={line.product.id}><span>{line.product.brand} {line.product.name}</span><b>×{line.quantity}</b></div>)}</div>
-    {!!lines.length && <button className="button primary wide" onClick={async () => {
+    <button className="button ghost wide" onClick={() => setSelecting((value) => !value)}>{selecting ? "Готово" : "Выбрать"}</button>
+    <div className="draft-list">{lines.map((line) => <div key={line.product.id} onClick={() => selecting && setSelected((current) => current.includes(line.product.id) ? current.filter((id) => id !== line.product.id) : [...current, line.product.id])}><span>{selecting && <input type="checkbox" readOnly checked={selected.includes(line.product.id)} />} <b>{line.product.brand} {line.product.name}</b><small>{line.product.color} · {line.product.article}</small></span><b>×{line.quantity}</b></div>)}</div>
+    {!!lines.length && <button className="button primary wide" disabled={selecting && !selected.length} onClick={async () => {
       try {
-        await post("/api/distributions", { toLocationId: to, lines: lines.map((line) => ({ productId: line.product.id, quantity: line.quantity })) }, { "Idempotency-Key": crypto.randomUUID() });
-        setLines([]); setStatus("Распределение подтверждено");
+        const picked = selecting ? lines.filter((line) => selected.includes(line.product.id)) : lines;
+        await post("/api/distributions", { batchId: activeBatch?.id, toLocationId: to, lines: picked.map((line) => ({ productId: line.product.id, quantity: line.quantity })) }, { "Idempotency-Key": crypto.randomUUID() });
+        setLines((current) => current.filter((line) => !picked.some((item) => item.product.id === line.product.id))); setSelected([]); setStatus("Распределение подтверждено");
       } catch (error: any) { setStatus(error.message); }
-    }}>Распределить коробки</button>}
+    }}>Распределить выбранное</button>}
   </section>;
 }
 
@@ -1636,6 +1703,8 @@ function WarehouseSettings({
   const [editing, setEditing] = useState<number | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [floorFor, setFloorFor] = useState<number | null>(null);
+  const [floorLabel, setFloorLabel] = useState("");
   const reset = () => {
     setEditing(null);
     setForm(empty);
@@ -1672,6 +1741,17 @@ function WarehouseSettings({
       setError(e.message);
     }
   };
+  const addFloor = async (location: Location) => {
+    if (!floorLabel.trim()) return;
+    try {
+      setError("");
+      await post(`/api/locations/${location.id}/floors`, { label: floorLabel.trim() });
+      await onChanged();
+      setFloorFor(null);
+      setFloorLabel("");
+      setMessage(`Этаж добавлен в «${location.name}».`);
+    } catch (e: any) { setError(e.message); }
+  };
   return (
     <section className="page">
       <div className="page-head">
@@ -1684,8 +1764,8 @@ function WarehouseSettings({
         </span>
       </div>
       <p className="muted">
-        Добавляйте любое количество мест хранения. Склад с остатками удалить
-        нельзя.
+        Добавляйте склады и этажи. Остатки хранятся на конкретном этаже; склад
+        с остатками удалить нельзя.
       </p>
       <div className="warehouse-form">
         <label>
@@ -1727,13 +1807,15 @@ function WarehouseSettings({
       )}
       {error && <div className="toast error-toast">{error}</div>}
       <div className="warehouse-list">
-        {locations.map((location) => (
+        {locations.filter((location) => !location.isFloor).map((location) => (
           <div className="warehouse-row" key={location.id}>
             <span>
               <b>
                 <Icon icon={faWarehouse} /> {location.name}
               </b>
               {location.description && <small>{location.description}</small>}
+              {!!location.hasFloors && <div className="warehouse-floors">{locations.filter((floor) => floor.parentLocationId === location.id).map((floor) => <span className="warehouse-floor-chip" key={floor.id}>{floor.floorName || floor.name}</span>)}</div>}
+              {floorFor === location.id ? <div className="warehouse-floor-form"><input autoFocus value={floorLabel} onChange={(event) => setFloorLabel(event.target.value)} placeholder="Например, 2 этаж" /><button className="button primary" onClick={() => addFloor(location)}>Добавить</button><button className="button ghost" onClick={() => { setFloorFor(null); setFloorLabel(""); }}>Отмена</button></div> : <button className="link warehouse-add-floor" onClick={() => { setFloorFor(location.id); setFloorLabel(""); }}>+ Добавить этаж</button>}
             </span>
             <span className="warehouse-actions">
               <button
@@ -1768,6 +1850,7 @@ function WarehouseSettings({
 function App() {
   const [logged, setLogged] = useState<boolean | null>(null);
   const [page, setPage] = useState("home");
+  const [distributionBatch, setDistributionBatch] = useState<any>();
   const [locations, setLocations] = useState<Location[]>([]);
   const [selected, setSelected] = useState<Product>();
   useEffect(() => {
@@ -1809,11 +1892,13 @@ function App() {
       <main>
         {page === "home" && <Home setPage={setPage} />}{" "}
         {page === "receive" && (
-          <Receive locations={locations} onOpenProduct={open} />
+          <Receive locations={locations} onOpenProduct={open} onLocationsChanged={loadLocations} onBack={() => setPage("home")} onFinished={(session, direct) => {
+            if (direct) setPage("stock"); else { setDistributionBatch(session); setPage("distribution"); }
+          }} />
         )}{" "}
         {page === "stock" && <Stock onOpen={open} />}{" "}
         {page === "transfer" && <Transfer locations={locations} />}{" "}
-        {page === "distribution" && <Distribution locations={locations} />}{" "}
+        {page === "distribution" && <Distribution locations={locations} batch={distributionBatch} />}{" "}
         {page === "order" && <Order locations={locations} onOpen={open} />}{" "}
         {page === "count" && <Count locations={locations} />}{" "}
         {page === "settings" && (
