@@ -305,6 +305,12 @@ function Scanner({
   };
   const controls = variant === "receive" ? (
     <div className="scanner-receive-controls">
+      {!camera && (
+        <button className="button dark" onClick={toggleCamera}>
+          <Icon icon={faCamera} />
+          Включить камеру
+        </button>
+      )}
       <button className="manual-entry-link" onClick={() => setManualOpen((value) => !value)}>
         Ввести штрихкод вручную
       </button>
@@ -648,7 +654,6 @@ function Receive({
       setLast(r);
       setTotal((v) => v + 1);
       setReceived((current) => ({ ...current, [r.product.id]: (current[r.product.id] || 0) + 1 }));
-      setToast(`+1 · ${r.product.brand} ${r.product.name}`);
     } catch (e: any) {
       if (e.code === "UNKNOWN_BARCODE") {
         if (createdSession && sessionRef.current) {
@@ -769,10 +774,9 @@ function Receive({
             <div className="receive-stepper">
               <button aria-label="Убрать одну коробку" onClick={async () => {
               try {
-                const result = await post(`/api/receiving/sessions/${sessionRef.current?.id}/remove-one`, { barcode: last.barcode || last.product.barcode }, { "Idempotency-Key": crypto.randomUUID() });
+                await post(`/api/receiving/sessions/${sessionRef.current?.id}/remove-one`, { barcode: last.barcode || last.product.barcode }, { "Idempotency-Key": crypto.randomUUID() });
                 setTotal((value) => Math.max(0, value - 1));
                 setReceived((current) => ({ ...current, [last.product.id]: Math.max(0, (current[last.product.id] || 0) - 1) }));
-                setToast(`−1 · ${result.product.brand} ${result.product.name}`);
               } catch (error: any) { setToast(error.message || "Не удалось убрать коробку."); }
               }}>−</button>
               <strong aria-live="polite">{received[last.product.id] || 0}</strong>
@@ -797,7 +801,6 @@ function Receive({
                   setReceived((current) => ({ ...current, [r.product.id]: (current[r.product.id] || 0) + r.quantity }));
                   setBulk("");
                   setBulkOpen(false);
-                  setToast(`+${r.quantity} · ${r.product.brand} ${r.product.name}`);
                 } catch (e: any) {
                   setToast(e.message || "Не удалось добавить количество.");
                 }
@@ -811,17 +814,18 @@ function Receive({
           </div>
         </article>
       )}
-      {session && (
+      {(session || cameraOpen) && (
         <div className="action-row">
           <button
             className="button ghost"
             onClick={() => setCameraOpen((value) => !value)}
           >
             <Icon icon={cameraOpen ? faXmark : faCamera} />
-            {cameraOpen ? "Остановить камеру" : "Открыть камеру"}
+            {cameraOpen ? "Выкл камеру" : "Вкл камеру"}
           </button>
           <button
             className="button primary"
+            disabled={!session || total === 0}
             onClick={async () => {
               try {
                 await post(
@@ -839,6 +843,7 @@ function Receive({
               }
             }}
           >
+            <Icon icon={faCircleCheck} />
             Завершить
           </button>
         </div>
