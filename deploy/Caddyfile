@@ -1,0 +1,4 @@
+{$OPENBOOTS_DOMAIN} {
+    encode gzip
+    reverse_proxy openboots:3001
+}

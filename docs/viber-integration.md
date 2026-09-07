@@ -1,4 +1,4 @@
-# Viber integration
+# Интеграция с Viber
 
 OpenBoots реализует безопасный `ViberAdapter` boundary. Preview доступен всегда и требует `salePrice`; пользователь может отредактировать текст, скопировать его и открыть Viber deep link.
 

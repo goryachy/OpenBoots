@@ -1,0 +1,57 @@
+services:
+  inventree-db:
+    image: postgres:17
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdb
+      POSTGRES_USER: ${INVENTREE_DB_USER:?Set INVENTREE_DB_USER}
+      POSTGRES_PASSWORD: ${INVENTREE_DB_PASSWORD:?Set INVENTREE_DB_PASSWORD}
+      POSTGRES_DB: ${INVENTREE_DB_NAME:?Set INVENTREE_DB_NAME}
+    volumes:
+      - ${INVENTREE_EXT_VOLUME:?Set INVENTREE_EXT_VOLUME}:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  inventree-cache:
+    image: redis:7-alpine
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  inventree-server:
+    image: inventree/inventree:${INVENTREE_TAG:-stable}
+    ports:
+      - "8091:8000"
+    depends_on:
+      inventree-db:
+        condition: service_healthy
+      inventree-cache:
+        condition: service_healthy
+    env_file:
+      - .env.inventree
+    environment:
+      INVENTREE_SERVER: http://inventree-server:8000
+    volumes:
+      - ${INVENTREE_EXT_VOLUME}:/home/inventree/data
+    healthcheck:
+      test: ['CMD-SHELL', 'invoke server-health --address "http://localhost:8000"']
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  inventree-worker:
+    image: inventree/inventree:${INVENTREE_TAG:-stable}
+    command: invoke worker
+    depends_on:
+      inventree-server:
+        condition: service_healthy
+    env_file:
+      - .env.inventree
+    volumes:
+      - ${INVENTREE_EXT_VOLUME}:/home/inventree/data

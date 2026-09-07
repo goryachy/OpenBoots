@@ -1,0 +1,35 @@
+services:
+  openboots:
+    build: .
+    environment:
+      NODE_ENV: production
+      CORE_MODE: demo
+      ALLOW_DEMO_PRODUCTION: "true"
+      DATABASE_PATH: /app/data/openboots.db
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the environment}
+      PORT: 3001
+    expose:
+      - "3001"
+    volumes:
+      - openboots_data:/app/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      OPENBOOTS_DOMAIN: ${OPENBOOTS_DOMAIN:?Set OPENBOOTS_DOMAIN in the environment}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - openboots
+    restart: unless-stopped
+
+volumes:
+  openboots_data:
+  caddy_data:
+  caddy_config:

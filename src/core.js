@@ -1,7 +1,15 @@
-import { db, timestamp, tx } from './db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { db, productPhotoDirectory, timestamp, tx } from './db.js';
 
 export const sizesFromRow = (row) => JSON.parse(row.sizes_json || '[]');
-const productView = (row) => ({ ...row, sizes: sizesFromRow(row), pairsPerBox: row.pairs_per_box ?? null, salePrice: row.sale_price_cents == null ? null : row.sale_price_cents / 100, aliases: row.aliases ? JSON.parse(row.aliases) : [] });
+const productView = (row) => ({ ...row, sizes: sizesFromRow(row), pairsPerBox: row.pairs_per_box ?? null, salePrice: row.sale_price_cents == null ? null : row.sale_price_cents / 100, aliases: row.aliases ? JSON.parse(row.aliases) : [], photoUrl: row.photo_path ? `/api/products/${row.id}/photo?v=${encodeURIComponent(row.photo_updated_at || '')}` : null });
+const safePhotoPath = (filePath) => {
+  const root = `${path.resolve(productPhotoDirectory)}${path.sep}`;
+  const resolved = path.resolve(filePath || '');
+  return resolved.startsWith(root) ? resolved : null;
+};
 
 export class DemoInventoryCore {
   findProductByBarcode(barcode) {
@@ -9,9 +17,38 @@ export class DemoInventoryCore {
     return row ? productView(row) : null;
   }
   getProduct(id) { const row = db.prepare(`SELECT p.*, (SELECT json_group_array(pa.barcode) FROM product_aliases pa WHERE pa.product_id=p.id) aliases FROM products p WHERE p.id=?`).get(id); return row ? productView(row) : null; }
+  setProductPhoto(id, file) {
+    const product = this.getProduct(id);
+    if (!product) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' });
+    const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[file.mimetype];
+    if (!extension) throw Object.assign(new Error('UNSUPPORTED_IMAGE'), { code: 'UNSUPPORTED_IMAGE' });
+    fs.mkdirSync(productPhotoDirectory, { recursive: true });
+    const target = path.join(productPhotoDirectory, `${Number(id)}-${crypto.randomUUID()}.${extension}`);
+    const temporary = `${target}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(temporary, file.buffer);
+      fs.renameSync(temporary, target);
+      db.prepare('UPDATE products SET photo_path=?,photo_updated_at=? WHERE id=?').run(target, timestamp(), Number(id));
+    } catch (error) {
+      fs.rmSync(temporary, { force: true });
+      fs.rmSync(target, { force: true });
+      throw error;
+    }
+    const previousPath = safePhotoPath(product.photo_path);
+    if (previousPath && previousPath !== target) fs.rmSync(previousPath, { force: true });
+    return this.getProduct(id);
+  }
+  getProductPhoto(id) {
+    const product = this.getProduct(id);
+    const filePath = safePhotoPath(product?.photo_path);
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    const extension = path.extname(filePath).toLowerCase();
+    const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+    return { buffer: fs.readFileSync(filePath), mime };
+  }
   searchProducts(query = '', filters = {}) {
     const like = `%${query}%`;
-    const rows = db.prepare(`SELECT p.*, COALESCE(SUM(s.quantity),0) total_stock, (SELECT json_group_array(pa.barcode) FROM product_aliases pa WHERE pa.product_id=p.id) aliases FROM products p LEFT JOIN stock s ON s.product_id=p.id WHERE (?='' OR p.name LIKE ? OR p.brand LIKE ? OR p.model LIKE ? OR p.article LIKE ? OR p.color LIKE ? OR p.barcode=? OR p.internal_barcode=? OR p.id IN (SELECT product_id FROM product_aliases WHERE barcode=?)) GROUP BY p.id ORDER BY p.name LIMIT 100`).all(query, like, like, like, like, like, query, query, query).map(productView);
+    const rows = db.prepare(`SELECT p.*, COALESCE(SUM(s.quantity),0) total_stock, (SELECT json_group_array(pa.barcode) FROM product_aliases pa WHERE pa.product_id=p.id) aliases FROM products p LEFT JOIN stock s ON s.product_id=p.id WHERE (?='' OR p.name LIKE ? OR p.brand LIKE ? OR p.model LIKE ? OR p.article LIKE ? OR p.color LIKE ? OR p.barcode=? OR p.internal_barcode=? OR p.id IN (SELECT product_id FROM product_aliases WHERE barcode=?)) GROUP BY p.id ORDER BY p.name LIMIT 100`).all(query, like, like, like, like, like, query, query, query).map((row) => ({ ...productView(row), stock: this.getStock(row.id) }));
     return rows.filter((row) => {
       if (filters.inStock && row.total_stock <= 0) return false;
       if (filters.brand && !row.brand.toLowerCase().includes(String(filters.brand).toLowerCase())) return false;
@@ -22,7 +59,11 @@ export class DemoInventoryCore {
     });
   }
   getLocations() { return db.prepare('SELECT id,name FROM locations WHERE active=1 ORDER BY id').all(); }
+  createLocation(input) { const r = db.prepare('INSERT INTO locations(name) VALUES (?)').run(input.name); return db.prepare('SELECT id,name FROM locations WHERE id=?').get(r.lastInsertRowid); }
+  updateLocation(id, input) { const result = db.prepare('UPDATE locations SET name=? WHERE id=? AND active=1').run(input.name, id); if (!result.changes) throw new Error('LOCATION_NOT_FOUND'); return db.prepare('SELECT id,name FROM locations WHERE id=?').get(id); }
+  deleteLocation(id) { const location = db.prepare('SELECT id FROM locations WHERE id=? AND active=1').get(id); if (!location) throw new Error('LOCATION_NOT_FOUND'); const stock = db.prepare('SELECT 1 FROM stock WHERE location_id=? AND quantity>0 LIMIT 1').get(id); if (stock) throw Object.assign(new Error('LOCATION_NOT_EMPTY'), { code: 'LOCATION_NOT_EMPTY' }); db.prepare('UPDATE locations SET active=0 WHERE id=?').run(id); return { ok: true }; }
   getStock(productId) { return db.prepare('SELECT l.id location_id,l.name,COALESCE(s.quantity,0) quantity FROM locations l LEFT JOIN stock s ON s.location_id=l.id AND s.product_id=? WHERE l.active=1 ORDER BY l.id').all(productId); }
+  getBrands() { return db.prepare("SELECT DISTINCT brand FROM products WHERE trim(brand)<>'' ORDER BY brand").all().map((row) => row.brand); }
   getMovementHistory(productId) { return db.prepare('SELECT m.*,l.name location_name FROM movements m JOIN locations l ON l.id=m.location_id WHERE m.product_id=? ORDER BY m.created_at DESC LIMIT 100').all(productId); }
   ensureStock(productId, locationId) { db.prepare('INSERT OR IGNORE INTO stock(product_id,location_id,quantity) VALUES (?,?,0)').run(productId, locationId); }
   mutateStock(productId, locationId, delta, type, relatedId = null, userId = null) {
@@ -41,6 +82,33 @@ export class DemoInventoryCore {
       const product = this.getProduct(result.lastInsertRowid);
       return product;
     });
+  }
+  updateProduct(id, input) {
+    return tx(() => {
+      const current = this.getProduct(id);
+      if (!current) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' });
+      if (input.barcode && input.barcode !== current.barcode) {
+        const linked = this.findProductByBarcode(input.barcode);
+        if (linked && linked.id !== Number(id)) throw Object.assign(new Error('DUPLICATE_BARCODE'), { code: 'DUPLICATE_BARCODE' });
+      }
+      db.prepare('UPDATE products SET name=?,brand=?,model=?,article=?,color=?,sizes_json=?,pairs_per_box=?,sale_price_cents=?,barcode=?,note=? WHERE id=?').run(input.name,input.brand || '',input.model || '',input.article || '',input.color || '',JSON.stringify(input.sizes || []),input.pairsPerBox || null,input.salePrice == null || input.salePrice === '' ? null : Math.round(Number(input.salePrice) * 100),input.barcode || null,input.note || '',id);
+      return this.getProduct(id);
+    });
+  }
+  deleteProduct(id) {
+    const product = this.getProduct(id);
+    const result = tx(() => {
+      if (!this.getProduct(id)) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' });
+      if (db.prepare('SELECT 1 FROM stock WHERE product_id=? AND quantity>0 LIMIT 1').get(id)) throw Object.assign(new Error('PRODUCT_IN_USE'), { code: 'PRODUCT_IN_USE' });
+      if (db.prepare('SELECT 1 FROM movements WHERE product_id=? LIMIT 1').get(id)) throw Object.assign(new Error('PRODUCT_HAS_HISTORY'), { code: 'PRODUCT_HAS_HISTORY' });
+      if (db.prepare('SELECT 1 FROM order_lines WHERE product_id=? LIMIT 1').get(id)) throw Object.assign(new Error('PRODUCT_HAS_ORDERS'), { code: 'PRODUCT_HAS_ORDERS' });
+      db.prepare('DELETE FROM product_aliases WHERE product_id=?').run(id);
+      db.prepare('DELETE FROM products WHERE id=?').run(id);
+      return { ok: true };
+    });
+    const photoPath = safePhotoPath(product?.photo_path);
+    if (photoPath) fs.rmSync(photoPath, { force: true });
+    return result;
   }
   linkBarcode(productId, barcode) { return tx(() => { if (this.findProductByBarcode(barcode)) throw Object.assign(new Error('DUPLICATE_BARCODE'), { code: 'DUPLICATE_BARCODE' }); db.prepare('INSERT INTO product_aliases(barcode,product_id,source) VALUES (?,?,?)').run(barcode, productId, 'linked'); return this.getProduct(productId); }); }
   createCustomer(input) { const existing = db.prepare('SELECT * FROM customers WHERE phone=?').get(input.phone); if (existing) return existing; const r = db.prepare('INSERT INTO customers(name,phone,note,created_at) VALUES (?,?,?,?)').run(input.name,input.phone,input.note || '',timestamp()); return db.prepare('SELECT * FROM customers WHERE id=?').get(r.lastInsertRowid); }
