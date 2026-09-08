@@ -45,6 +45,8 @@
 .product-photo-actions button:disabled,.product-draft-photo button:disabled,.add-color-photo:disabled{opacity:.4;cursor:not-allowed}
 .product-photo-actions button.danger,.product-draft-photo button.danger{background:var(--color-danger-soft);border-color:var(--color-danger-soft);color:var(--color-danger)}
 .product-photo-actions button.danger:hover:not(:disabled),.product-draft-photo button.danger:hover:not(:disabled){background:var(--color-danger-soft);border-color:var(--color-danger)}
+.product-photo-actions--icon-only button{width:44px;min-width:44px;min-height:44px;padding:0;flex:0 0 44px;}
+.product-photo-actions--icon-only button svg{width:18px;height:18px;}
 @media(max-width:390px){.product-photo-actions button,.product-draft-photo button{font-size:13px;padding:8px 8px}}
 @media(max-width:360px){.product-photo-actions button,.product-draft-photo button{font-size:12px;padding:8px 6px}}
 
@@ -71,5 +73,47 @@
 .product-draft-photo-add svg{width:24px;height:24px}
 .add-color-photo{height:clamp(140px,42vw,180px);min-height:140px;padding:12px;border-color:var(--color-success-muted);border-radius:var(--radius-card);background:var(--color-image-placeholder);color:var(--color-success);font-size:var(--font-size-label);line-height:1.3;text-align:center;white-space:normal;overflow-wrap:anywhere}
 .add-color-photo img{display:block;width:100%;height:100%;object-fit:cover}
+
+/* Edit form: make the photo the visual focus and keep its actions beside it. */
+.product-form-photo--edit{display:block;min-height:244px;padding:16px;background:var(--color-surface)}
+.product-form-photo--edit>span{display:block;margin:0 0 12px;color:var(--color-ink);font-size:var(--font-size-label);font-weight:var(--font-weight-bold)}
+.product-form-photo--edit>.product-photo{display:grid;grid-template-columns:minmax(180px,220px) minmax(120px,1fr);align-items:center;gap:14px;width:100%;margin:0}
+.product-form-photo--edit .product-photo-media{width:100%;aspect-ratio:1/1;border:2px solid var(--color-success-muted);box-shadow:0 8px 20px rgba(33,51,38,.1)}
+.product-form-photo--edit .product-photo-actions{width:auto;display:flex;flex-direction:column;gap:8px;align-items:stretch}
+.product-form-photo--edit .product-photo-actions button{width:100%;min-height:44px;flex:0 0 auto}
+@media(max-width:480px){
+  .product-form-photo--edit{min-height:220px;padding:14px}
+  .product-form-photo--edit>.product-photo{grid-template-columns:minmax(0,1fr) 112px;gap:12px}
+  .product-form-photo--edit .product-photo-media{min-width:0}
+}
+@media(max-width:360px){
+  .product-form-photo--edit>.product-photo{grid-template-columns:minmax(0,1fr) 104px;gap:8px}
+  .product-form-photo--edit .product-photo-actions button{font-size:12px;padding-inline:6px}
+}
 @media(max-width:390px){.product-form-photo,.product-form-photo--draft{grid-template-columns:minmax(0,1fr) 88px;gap:10px}.product-photo-actions{gap:6px}.product-photo-actions button,.product-draft-photo button{min-width:0;padding-inline:6px}}
 @media(max-width:360px){.product-form-photo,.product-form-photo--draft{grid-template-columns:minmax(0,1fr) 84px;gap:8px}.product-photo-actions{gap:4px}.product-photo-actions button,.product-draft-photo button{font-size:11px;padding-inline:4px}}
+
+/* Final containment pass: image blocks must never overflow into adjacent copy. */
+.product-photo,.product-photo-media,.product-form-photo,.product-form-photo>*,.product-draft-photo,.product-draft-photo-add,.product-card-photo,.receiving-summary-photo,.receive-product-top>*{min-width:0;max-width:100%}
+.product-photo img,.product-draft-photo img,.product-card-photo img,.receiving-summary-photo img,.receive-history-photo img{max-width:100%}
+.product-detail-hero>.product-photo{width:100%;max-width:160px}
+.receive-product-top{min-width:0}
+.receive-product-top>.product-photo{width:100%;max-width:100%;height:auto;aspect-ratio:1/1}
+.receive-product-top>.product-photo .product-photo-media{width:100%;height:auto;aspect-ratio:1/1}
+.receive-history-photo{width:48px;height:48px;max-width:48px;min-width:48px;aspect-ratio:1/1}
+
+/* Keep the edit form usable at every modal width. */
+.product-form-photo--edit,.product-form-photo--edit>.product-photo{width:100%;max-width:100%;min-width:0}
+.product-form-photo--edit{overflow:hidden}
+.product-form-photo--edit>.product-photo{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:14px;overflow:hidden}
+.product-form-photo--edit .product-photo-media{flex:1 1 auto;width:auto;max-width:220px;min-width:0;height:auto;aspect-ratio:1/1}
+.product-form-photo--edit .product-photo-actions{flex:0 0 128px;width:128px;min-width:0;max-width:128px}
+.product-form-photo--edit .product-photo-actions button{min-width:0;overflow-wrap:anywhere}
+@media(max-width:480px){
+  .product-form-photo--edit>.product-photo{gap:12px}
+  .product-form-photo--edit .product-photo-actions{flex-basis:112px;width:112px;max-width:112px}
+}
+@media(max-width:360px){
+  .product-form-photo--edit>.product-photo{gap:8px}
+  .product-form-photo--edit .product-photo-actions{flex-basis:96px;width:96px;max-width:96px}
+}

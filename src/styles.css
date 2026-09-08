@@ -134,6 +134,12 @@ input:disabled,select:disabled,textarea:disabled{background:var(--color-bg-eleva
 .action-row{gap:var(--space-2)}
 .chip-row{gap:var(--space-2)}
 .stock-list>div,.history>div,.draft-list>div,.count-list>div{padding:var(--space-3) 0}
+.movement-history{margin-top:var(--space-5)}
+.movement-history summary{display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:18px;font-weight:700;list-style:none}
+.movement-history summary::-webkit-details-marker{display:none}
+.movement-history summary::after{content:"⌄";color:var(--muted);font-size:22px;line-height:1;transition:transform .15s ease}
+.movement-history[open] summary::after{transform:rotate(180deg)}
+.movement-history .history{margin-top:var(--space-2)}
 .button svg,.icon-button svg{width:var(--icon-size-control);height:var(--icon-size-control);vertical-align:middle}
 .button.primary svg{width:var(--icon-size-primary);height:var(--icon-size-primary)}
 .link-button svg,.receive-back svg{width:var(--icon-size-meta);height:var(--icon-size-meta)}
@@ -150,3 +156,47 @@ input:disabled,select:disabled,textarea:disabled{background:var(--color-bg-eleva
 .modal-card .ocr-box{margin-top:var(--space-3)}
 @media(max-width:480px){.page{padding:var(--space-5) var(--space-4)}.modal-card{padding:var(--space-5) var(--space-4)}}
 @media(max-width:390px){.modal-card>.action-row .button{width:100%;flex:0 0 auto}.modal-card>.button{width:100%}}
+
+/* Visual QA correction: shared checkbox and mobile content safety. */
+:root{--bottom-nav-clearance:calc(88px + env(safe-area-inset-bottom));--selection-size:20px}
+.app-shell{padding-bottom:var(--bottom-nav-clearance)}
+input[type="checkbox"]{appearance:none;-webkit-appearance:none;width:var(--selection-size);height:var(--selection-size);min-width:var(--selection-size);min-height:var(--selection-size);margin:0;padding:0;flex:0 0 var(--selection-size);border:1.5px solid var(--color-success);border-radius:6px;background:var(--color-surface);display:inline-grid;place-content:center;vertical-align:middle;cursor:pointer}
+input[type="checkbox"]::after{content:"";width:10px;height:5px;border-left:2px solid var(--color-accent);border-bottom:2px solid var(--color-accent);transform:rotate(-45deg) scale(0);transform-origin:center;transition:transform .12s ease}
+input[type="checkbox"]:checked{border-color:var(--color-primary);background:var(--color-primary)}
+input[type="checkbox"]:checked::after{transform:rotate(-45deg) scale(1)}
+input[type="checkbox"]:focus-visible{outline:2px solid var(--color-success-muted);outline-offset:2px;box-shadow:var(--shadow-focus)}
+input[type="checkbox"]:disabled{background:var(--color-bg-elevated);border-color:var(--color-border);cursor:not-allowed;opacity:.6}
+.toggle{gap:var(--space-2);min-height:var(--control-height-standard);margin:4px 0;line-height:1.3}
+.toggle input[type="checkbox"]{width:var(--selection-size);height:var(--selection-size)}
+.toggle+.toggle{margin-top:0}
+.draft-list>div{min-width:0;gap:var(--space-3)}
+.draft-list>div>span{min-width:0;flex:1;overflow-wrap:anywhere}
+.draft-list>div>span b{overflow-wrap:anywhere}
+.draft-list>div>span input[type="checkbox"]{margin-right:var(--space-2)}
+.draft-list>div:has(input[type="checkbox"]:checked){background:var(--color-surface-soft);border-bottom-color:var(--color-success-muted);border-radius:var(--radius-control);padding-inline:var(--space-2)}
+/* P1 active receiving product usability */
+.receive-session-summary{margin:0 0 8px;color:var(--muted);font:500 12px 'DM Mono',monospace;letter-spacing:-.1px}
+.receive-active-indicator{display:inline-flex;margin-top:6px;padding:4px 8px;background:var(--color-success-soft);color:var(--color-success);font:600 10px 'DM Mono',monospace;letter-spacing:.08em}
+.receive-product-summary{min-width:0}
+.receive-product-summary h3{overflow-wrap:anywhere}
+.receive-quantity-row{margin-top:12px}
+.receive-stepper{grid-template-columns:44px 42px 44px 44px;gap:6px;min-width:0}
+.receive-stepper button{width:100%;min-width:44px;min-height:44px;height:44px}
+.receive-stepper strong{min-width:0}
+.receive-card-actions{margin-top:10px;padding-top:10px}
+.receive-card-actions button{min-height:44px;padding:8px 10px;font-size:13px;line-height:1.2;white-space:normal;overflow-wrap:anywhere}
+@media(max-width:390px){.receive-stepper{grid-template-columns:44px 36px 44px 44px;gap:4px}.receive-stepper button{min-width:44px}.receive-stepper strong{font-size:21px}.receive-card-actions{margin-top:8px;padding-top:8px}}
+
+/* Receiving session: keep context visible and make scanned product photos square. */
+.receive-session-context{margin:0 0 8px;color:var(--muted);font-size:12px}
+.receive-card-actions{grid-template-columns:repeat(3,minmax(0,1fr))}
+.receive-photo,.receive-page--active .receive-photo{width:82px;height:82px;aspect-ratio:1}
+.receive-history-item{padding:8px 10px;gap:8px}
+.receive-history-main{display:flex;align-items:center;gap:10px;min-width:0;flex:1;padding:0;background:transparent;color:var(--ink);text-align:left}
+.receive-history-photo{width:48px;height:48px;aspect-ratio:1}
+.receive-history-stepper{display:flex;align-items:center;gap:5px;flex:none}
+.receive-history-stepper button{width:32px;height:32px;border-radius:9px;background:#eef1ef;color:var(--ink);font-size:21px;line-height:1}
+.receive-history-stepper button:disabled{opacity:.35;cursor:not-allowed}
+.receive-history-stepper strong{display:flex;align-items:baseline;gap:3px;min-width:38px;justify-content:center;font:600 16px 'DM Mono',monospace}
+.receive-history-stepper strong small{font:500 9px Manrope;color:var(--muted)}
+.receive-history-stepper button:focus-visible,.receive-history-main:focus-visible{outline:2px solid var(--color-success-muted);outline-offset:2px;box-shadow:var(--shadow-focus)}
