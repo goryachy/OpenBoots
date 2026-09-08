@@ -412,7 +412,9 @@ describe("OpenBoots critical workflows", () => {
     expect(filtered.body.products[0].brand).toBe("New Balance");
     const label = await getJson("/api/products/1/label");
     expect(label.response.status).toBe(200);
-    expect(new TextDecoder().decode(label.body)).toContain("INV-000001824");
+    const labelHtml = new TextDecoder().decode(label.body);
+    expect(labelHtml).toContain("INV-000001824");
+    expect(labelHtml).toContain("Назад");
     const count = (await postJson("/api/counts", { locationId: 1 })).body.count;
     const line = count.lines.find((x: any) => x.product_id === 1);
     await postJson(`/api/counts/${count.id}/lines`, {
@@ -528,6 +530,98 @@ describe("OpenBoots critical workflows", () => {
       headers: { Cookie: cookie },
     });
     expect(Buffer.from(await stillAvailable.arrayBuffer())).toEqual(png);
+
+    const replacement = new FormData();
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    replacement.append("image", new Blob([jpeg], { type: "image/jpeg" }), "shoe.jpg");
+    const replaced = await postForm(`/api/products/${created.body.product.id}/photo`, replacement);
+    expect(replaced.response.status).toBe(200);
+    expect(replaced.body.product.photoUrl).not.toBe(uploaded.body.product.photoUrl);
+    const replacementImage = await fetch(`${base}${replaced.body.product.photoUrl}`, { headers: { Cookie: cookie } });
+    expect(replacementImage.headers.get("content-type")).toContain("image/jpeg");
+    expect(Buffer.from(await replacementImage.arrayBuffer())).toEqual(jpeg);
+
+    const listed = await getJson(`/api/products?query=${encodeURIComponent("Photo test shoe")}`);
+    expect(listed.body.products.find((product: any) => product.id === created.body.product.id).photoUrl).toBe(replaced.body.product.photoUrl);
+
+    const removed = await request(`/api/products/${created.body.product.id}/photo`, { method: "DELETE", headers: { Cookie: cookie } });
+    expect(removed.response.status).toBe(200);
+    expect(removed.body.product.photoUrl).toBeNull();
+    const absent = await fetch(`${base}/api/products/${created.body.product.id}/photo`, { headers: { Cookie: cookie } });
+    expect(absent.status).toBe(404);
+
+    const tooLarge = new FormData();
+    tooLarge.append("image", new Blob([Buffer.alloc(8 * 1024 * 1024 + 1)], { type: "image/png" }), "large.png");
+    const rejectedLarge = await postForm(`/api/products/${created.body.product.id}/photo`, tooLarge);
+    expect(rejectedLarge.response.status).toBe(413);
+    expect(rejectedLarge.body.error).toBe("IMAGE_TOO_LARGE");
+  });
+  it("creates and receives a photographed color variant exactly once", async () => {
+    const parent = await postJson("/api/products", {
+      name: "Color variant shoe",
+      brand: "Color brand",
+      model: "CV-100",
+      article: "CV-BASE",
+      color: "White",
+      barcode: "4820000099800",
+      sizes: [{ size: "40", quantity: 1 }],
+      pairsPerBox: 6,
+      salePrice: 125,
+    });
+    const session = await postJson("/api/receiving/sessions", {});
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl0U1kAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const makeForm = () => {
+      const form = new FormData();
+      form.append("parentProductId", String(parent.body.product.id));
+      form.append("article", "CV-BLACK");
+      form.append("color", "Black");
+      form.append("barcode", "4820000099801");
+      form.append("image", new Blob([png], { type: "image/png" }), "black.png");
+      return form;
+    };
+    const path = `/api/receiving/sessions/${session.body.session.id}/colors`;
+    const first = await request(path, { method: "POST", body: makeForm(), headers: { Cookie: cookie, "Idempotency-Key": "color-variant-1" } });
+    expect(first.response.status).toBe(201);
+    expect(first.body.product.name).toBe("Color variant shoe");
+    expect(first.body.product.article).toBe("CV-BLACK");
+    expect(first.body.product.color).toBe("Black");
+    expect(first.body.product.pairsPerBox).toBe(6);
+    expect(first.body.product.photoUrl).toContain(`/api/products/${first.body.product.id}/photo`);
+
+    const retry = await request(path, { method: "POST", body: makeForm(), headers: { Cookie: cookie, "Idempotency-Key": "color-variant-1" } });
+    expect(retry.response.status).toBe(200);
+    expect(retry.body.product.id).toBe(first.body.product.id);
+    const changedRetry = makeForm();
+    changedRetry.set("color", "Graphite");
+    const conflict = await request(path, { method: "POST", body: changedRetry, headers: { Cookie: cookie, "Idempotency-Key": "color-variant-1" } });
+    expect(conflict.response.status).toBe(400);
+    expect(conflict.body.error).toBe("IDEMPOTENCY_KEY_CONFLICT");
+    const receiving = await getJson(`/api/receiving/sessions/${session.body.session.id}`);
+    expect(receiving.body.session.lines).toEqual(expect.arrayContaining([expect.objectContaining({ product: expect.objectContaining({ id: first.body.product.id }), quantity: 1 })]));
+
+    const duplicateCode = await request(path, { method: "POST", body: makeForm(), headers: { Cookie: cookie, "Idempotency-Key": "color-variant-2" } });
+    expect(duplicateCode.response.status).toBe(400);
+    expect(duplicateCode.body.error).toBe("DUPLICATE_BARCODE");
+
+    const interrupted = await postJson("/api/products", {
+      name: "Color variant shoe", brand: "Color brand", model: "CV-100", article: "CV-GRAPHITE", color: "Graphite", barcode: "4820000099802",
+    });
+    db.prepare("INSERT INTO receiving_color_operations(session_id,idempotency_key,parent_product_id,request_fingerprint,product_id,barcode,created_at) VALUES (?,?,?,?,?,?,?)").run(
+      session.body.session.id, "interrupted-color-upload", parent.body.product.id, "old-fingerprint", interrupted.body.product.id, "4820000099802", new Date().toISOString(),
+    );
+    const resumeForm = new FormData();
+    resumeForm.append("parentProductId", String(parent.body.product.id));
+    resumeForm.append("article", "CV-GRAPHITE");
+    resumeForm.append("color", "Graphite");
+    resumeForm.append("barcode", "4820000099802");
+    resumeForm.append("image", new Blob([png], { type: "image/png" }), "graphite.png");
+    const resumed = await request(path, { method: "POST", body: resumeForm, headers: { Cookie: cookie, "Idempotency-Key": "resumed-color-upload" } });
+    expect(resumed.response.status).toBe(201);
+    expect(resumed.body.product.id).toBe(interrupted.body.product.id);
+    expect(resumed.body.product.photoUrl).toContain(`/api/products/${interrupted.body.product.id}/photo`);
   });
 });
 

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
@@ -24,8 +24,9 @@ import {
   faWarehouse,
   faXmark,
 } from "@fortawesome/free-solid-svg-icons";
-import { api, post } from "./api";
+import { api, post, removeProductPhoto, uploadProductPhoto, validateProductImage } from "./api";
 import "./styles.css";
+import "./product-image.css";
 
 if (import.meta.env.DEV && "serviceWorker" in navigator) {
   navigator.serviceWorker
@@ -76,6 +77,18 @@ type Product = {
 const Icon = ({ icon, className }: { icon: any; className?: string }) => (
   <FontAwesomeIcon icon={icon} className={className} />
 );
+const RECEIVING_SESSION_KEY = "openboots.receiving.session";
+const RECEIVING_REVIEW_KEY = "openboots.receiving.review";
+const APP_PAGE_KEY = "openboots.page";
+const readStored = (key: string) => {
+  try { return localStorage.getItem(key); } catch { return null; }
+};
+const writeStored = (key: string, value: string | null) => {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch { /* Storage may be unavailable in private browsing. */ }
+};
 const useBrands = () => {
   const [brands, setBrands] = useState<string[]>([]);
   useEffect(() => {
@@ -118,11 +131,15 @@ function Scanner({
   variant = "default",
   cameraOpen,
   onCameraChange,
+  autoArm,
+  resetScanKey,
 }: {
   onScan: (barcode: string) => void | Promise<void>;
   variant?: "default" | "receive";
   cameraOpen?: boolean;
   onCameraChange?: (open: boolean) => void;
+  autoArm?: boolean;
+  resetScanKey?: string | null;
 }) {
   const video = useRef<HTMLVideoElement>(null);
   const onScanRef = useRef(onScan);
@@ -140,6 +157,15 @@ function Scanner({
   const [message, setMessage] = useState("Готов к сканированию");
   const last = useRef("");
   useEffect(() => { scanArmedRef.current = scanArmed; }, [scanArmed]);
+  useEffect(() => {
+    if (variant !== "receive" || !camera || !autoArm) return;
+    last.current = "";
+    setScanArmed(true);
+    setMessage("Наведите код в рамку");
+  }, [autoArm, camera, variant]);
+  useEffect(() => {
+    if (variant === "receive" && resetScanKey) last.current = "";
+  }, [resetScanKey, variant]);
   useEffect(() => {
     onScanRef.current = (barcode) => {
       scanQueue.current = scanQueue.current
@@ -456,6 +482,7 @@ function ProductCard({
   const stock = product.stock?.filter((item: any) => item.quantity > 0) || [];
   return (
     <button className="product-card" onClick={() => onSelect?.(product)}>
+      <span className="product-card-photo"><ProductThumbnail product={product} /></span>
       <div className="product-card-info">
         <b>
           {product.brand ? `${product.brand} ` : ""}
@@ -486,6 +513,163 @@ function ProductCard({
   );
 }
 
+function ProductPhoto({
+  product,
+  onCapture,
+  onRemove,
+  uploading = false,
+  className = "",
+}: {
+  product: Product;
+  onCapture: (file?: File) => void;
+  onRemove?: () => void;
+  uploading?: boolean;
+  className?: string;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [imageState, setImageState] = useState<"missing" | "loading" | "ready" | "unavailable">(product.photoUrl ? "loading" : "missing");
+  const [imageSource, setImageSource] = useState("");
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    if (!product.photoUrl) {
+      setImageSource("");
+      setImageState("missing");
+      return undefined;
+    }
+    setImageState("loading");
+    fetch(product.photoUrl, { credentials: "include", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) {
+          if (active) setImageState(response.status === 404 ? "missing" : "unavailable");
+          return;
+        }
+        objectUrl = URL.createObjectURL(await response.blob());
+        if (active) {
+          setImageSource(objectUrl);
+          setImageState("ready");
+        } else URL.revokeObjectURL(objectUrl);
+      })
+      .catch(() => { if (active) setImageState("unavailable"); });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [product.id, product.photoUrl, retryKey]);
+
+  return (
+    <div className={`product-photo ${className}`.trim()}>
+      <input
+        ref={input}
+        className="visually-hidden"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        capture="environment"
+        onChange={(event) => {
+          onCapture(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
+      <div className="product-photo-media">
+        {imageState === "ready" ? (
+          <img src={imageSource} alt={product.name} />
+        ) : imageState === "unavailable" ? (
+          <div className="product-photo-error">
+            <Icon icon={faBoxOpen} />
+            <span>Не удалось загрузить фото</span>
+            <button type="button" onClick={() => setRetryKey((key) => key + 1)}>Повторить</button>
+          </div>
+        ) : imageState === "loading" ? (
+          <span className="product-photo-loading">Загрузка…</span>
+        ) : (
+          <button
+            type="button"
+            className="product-photo-add"
+            disabled={uploading}
+            onClick={() => input.current?.click()}
+          >
+            <Icon icon={faCamera} />
+            <span>{uploading ? "Сохраняем…" : "Добавить фото"}</span>
+          </button>
+        )}
+      </div>
+      {imageState === "ready" && <div className="product-photo-actions">
+        <button type="button" disabled={uploading} onClick={() => input.current?.click()}>
+          {uploading ? "Сохраняем…" : "Заменить"}
+        </button>
+        {onRemove && <button type="button" className="danger" disabled={uploading} onClick={onRemove}>Удалить</button>}
+      </div>}
+    </div>
+  );
+}
+
+function ProductThumbnail({ product, className = "" }: { product: Product; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [product.id, product.photoUrl]);
+  return product.photoUrl && !failed
+    ? <img className={className} src={product.photoUrl} alt="" onError={() => setFailed(true)} />
+    : <Icon icon={faBoxOpen} />;
+}
+
+function AddColorForm({
+  parent,
+  onSave,
+  onCancel,
+}: {
+  parent: Product;
+  onSave: (input: { article: string; color: string; barcode: string; photo: File; idempotencyKey: string }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [article, setArticle] = useState("");
+  const [color, setColor] = useState("");
+  const [barcode, setBarcode] = useState("");
+  const [photo, setPhoto] = useState<File>();
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const photoInput = useRef<HTMLInputElement>(null);
+  const idempotencyKey = useRef(crypto.randomUUID());
+  const photoPreview = useMemo(() => photo ? URL.createObjectURL(photo) : "", [photo]);
+
+  useEffect(() => () => { if (photoPreview) URL.revokeObjectURL(photoPreview); }, [photoPreview]);
+
+  return (
+    <div className="modal">
+      <div className="modal-card add-color-modal">
+        <p className="eyebrow">НОВЫЙ ЦВЕТ</p>
+        <h3>{parent.brand} {parent.name}</h3>
+        <p className="muted">Наследуются размеры, комплектация и цена. Для нового цвета обязателен отдельный артикул, штрихкод и фото.</p>
+        <form onSubmit={async (event) => {
+          event.preventDefault();
+          if (!photo || saving) return;
+          setSaving(true); setError("");
+          try { await onSave({ article: article.trim(), color: color.trim(), barcode: barcode.trim(), photo, idempotencyKey: idempotencyKey.current }); }
+          catch (reason: any) { setError(reason.message || "Не удалось добавить цвет."); setSaving(false); }
+        }}>
+          <label>Артикул<input autoFocus required value={article} onChange={(event) => setArticle(event.target.value)} /></label>
+          <label>Цвет<input required value={color} onChange={(event) => setColor(event.target.value)} /></label>
+          <label>Новый штрихкод<input required minLength={4} value={barcode} onChange={(event) => setBarcode(event.target.value)} inputMode="numeric" /></label>
+          <input ref={photoInput} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={(event) => {
+            try { validateProductImage(event.target.files?.[0]); setPhoto(event.target.files?.[0]); setError(""); }
+            catch (reason: any) { setError(reason.message || "Не удалось выбрать фото."); }
+            event.target.value = "";
+          }} />
+          <button type="button" className="add-color-photo" onClick={() => photoInput.current?.click()} disabled={saving}>
+            {photoPreview ? <img src={photoPreview} alt="Фото нового цвета" /> : <><Icon icon={faCamera} /><span>Сделать или выбрать фото</span></>}
+          </button>
+          <small className="muted">JPEG, PNG или WebP, до 8 МБ.</small>
+          {error && <div className="toast error-toast">{error}</div>}
+          <div className="action-row">
+            <button type="button" className="button ghost" disabled={saving} onClick={onCancel}>Отмена</button>
+            <button className="button primary" type="submit" disabled={!article.trim() || !color.trim() || barcode.trim().length < 4 || !photo || saving}>{saving ? "Сохраняем…" : "Добавить цвет"}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ProductDetail({
   product,
   onBack,
@@ -504,6 +688,7 @@ function ProductDetail({
   const [closeLocationId, setCloseLocationId] = useState(0);
   const [closeReason, setCloseReason] = useState("");
   const [locations, setLocations] = useState<Location[]>([]);
+  const [photoUploading, setPhotoUploading] = useState(false);
   useEffect(() => { api<{ locations: Location[] }>("/api/locations").then((r) => { setLocations(r.locations); setCloseLocationId(r.locations[0]?.id || 0); }); }, []);
   const stockTotal = currentProduct.stock?.reduce((sum: number, item: any) => sum + item.quantity, 0) || 0;
   useEffect(() => {
@@ -531,31 +716,88 @@ function ProductDetail({
       setStatus(e.message);
     }
   };
+  const uploadPhoto = async (file?: File) => {
+    if (!file) return;
+    setPhotoUploading(true);
+    setStatus("");
+    try {
+      const result = await uploadProductPhoto<{ product: Product }>(currentProduct.id, file);
+      setCurrentProduct(result.product);
+      setEditFields((current: any) => ({
+        ...current,
+        photoUrl: result.product.photoUrl,
+      }));
+      setStatus("Фото товара сохранено.");
+    } catch (error: any) {
+      setStatus(error.message || "Не удалось сохранить фото.");
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+  const deletePhoto = async () => {
+    if (!window.confirm("Удалить фотографию товара?")) return;
+    setPhotoUploading(true);
+    setStatus("");
+    try {
+      const result = await removeProductPhoto<{ product: Product }>(currentProduct.id);
+      setCurrentProduct(result.product);
+      setEditFields((current: any) => ({ ...current, photoUrl: null }));
+      setStatus("Фото товара удалено.");
+    } catch (error: any) {
+      setStatus(error.message || "Не удалось удалить фото.");
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
   return (
     <section className="page">
       <button className="back" onClick={onBack}>
         ← Назад
       </button>
       <div className="hero-card">
-        <p className="eyebrow">ТОВАР #{currentProduct.id}</p>
-        {currentProduct.archived && <p className="toast">Товар в архиве</p>}
-        <h2>
-          {currentProduct.brand} {currentProduct.name}
-        </h2>
-        <p>
-          {currentProduct.color} · {currentProduct.article || "Без артикула"}
-        </p>
-        <div className="chip-row">
-          {currentProduct.sizes?.length ? (
-            <span className="chip">
-              Размеры {currentProduct.sizes.map((s) => s.size).join("–")}
-            </span>
-          ) : null}
-          {currentProduct.pairsPerBox && (
-            <span className="chip">{currentProduct.pairsPerBox} пар/короб</span>
-          )}
-          <span className="chip">{formatMoney(currentProduct.salePrice)}</span>
+        <div className="product-detail-hero">
+          <ProductPhoto product={currentProduct} onCapture={uploadPhoto} onRemove={deletePhoto} uploading={photoUploading} />
+          <div>
+            <p className="eyebrow">ТОВАР #{currentProduct.id}</p>
+            {currentProduct.archived && <p className="toast">Товар в архиве</p>}
+            <h2>
+              {currentProduct.brand} {currentProduct.name}
+            </h2>
+            <p>
+              {currentProduct.color} · {currentProduct.article || "Без артикула"}
+            </p>
+            <div className="chip-row">
+              {currentProduct.sizes?.length ? (
+                <span className="chip">
+                  Размеры {currentProduct.sizes.map((s) => s.size).join("–")}
+                </span>
+              ) : null}
+              {currentProduct.pairsPerBox && (
+                <span className="chip">{currentProduct.pairsPerBox} пар/короб</span>
+              )}
+              <span className="chip">{formatMoney(currentProduct.salePrice)}</span>
+            </div>
+          </div>
         </div>
+      </div>
+      <div className="action-row product-detail-actions">
+        {currentProduct.archived ? <button className="button primary" onClick={async () => { try { const result=await post(`/api/products/${currentProduct.id}/restore`, {}); setCurrentProduct(result.product); setStatus("Товар восстановлен."); } catch (error: any) { setStatus(error.message); } }}>Восстановить</button> : null}
+        <button className="button" onClick={() => { setEditFields(currentProduct); setEditing(true); }}>
+          <Icon icon={faPen} /> Редактировать
+        </button>
+        <button className="button danger" onClick={() => setClosing(true)}>
+          <Icon icon={faTrash} /> Закрыть товар
+        </button>
+        <a
+          className="button"
+          href={`/api/products/${currentProduct.id}/label`}
+          target="_blank"
+        >
+          Этикетка
+        </a>
+        <button className="button" onClick={preview}>
+          Предпросмотр Viber
+        </button>
       </div>
       <h3>Остаток по местам</h3>
       <div className="stock-list">
@@ -585,25 +827,6 @@ function ProductDetail({
           </div>
         ))}
       </div>
-      <div className="action-row">
-        {currentProduct.archived ? <button className="button primary" onClick={async () => { try { const result=await post(`/api/products/${currentProduct.id}/restore`, {}); setCurrentProduct(result.product); setStatus("Товар восстановлен."); } catch (error: any) { setStatus(error.message); } }}>Восстановить</button> : null}
-        <button className="button" onClick={() => { setEditFields(currentProduct); setEditing(true); }}>
-          <Icon icon={faPen} /> Редактировать
-        </button>
-        <button className="button danger" onClick={() => setClosing(true)}>
-          <Icon icon={faTrash} /> Закрыть товар
-        </button>
-        <a
-          className="button"
-          href={`/api/products/${currentProduct.id}/label`}
-          target="_blank"
-        >
-          Этикетка
-        </a>
-        <button className="button" onClick={preview}>
-          Предпросмотр Viber
-        </button>
-      </div>
       {!message && status && <div className="toast">{status}</div>}
       {message && (
         <div className="ocr-box">
@@ -632,7 +855,7 @@ function ProductDetail({
           {status && <small className="muted">{status}</small>}
         </div>
       )}
-      {editing && <ProductForm fields={editFields} setFields={setEditFields} text={editText} setText={setEditText} title="РЕДАКТИРОВАНИЕ ТОВАРА" onCancel={() => setEditing(false)} onSave={async () => {
+      {editing && <ProductForm fields={editFields} setFields={setEditFields} text={editText} setText={setEditText} title="РЕДАКТИРОВАНИЕ ТОВАРА" photoProduct={currentProduct} onCapturePhoto={uploadPhoto} onRemovePhoto={deletePhoto} photoUploading={photoUploading} onCancel={() => setEditing(false)} onSave={async () => {
         try { const result = await api<{ product: Product }>(`/api/products/${currentProduct.id}`, { method: "PATCH", body: JSON.stringify(editFields) }); setCurrentProduct(result.product); setEditFields(result.product); setStatus("Товар сохранён."); setEditing(false); }
         catch (error: any) { setStatus(error.message); }
       }} />}
@@ -659,11 +882,11 @@ function Receive({
   const sessionRef = useRef<any>(undefined);
   const [last, setLast] = useState<any>();
   const [active, setActive] = useState<any>();
-  const [mode, setMode] = useState<"position" | "conveyor">("position");
-  const [review, setReview] = useState(false);
+  const [mode, setMode] = useState<"position" | "conveyor">(() => readStored("openboots.receiving.mode") === "conveyor" ? "conveyor" : "position");
+  const [review, setReview] = useState(() => readStored(RECEIVING_REVIEW_KEY) === "1" && Boolean(readStored(RECEIVING_SESSION_KEY)));
   const [completed, setCompleted] = useState<any>();
   const [addColor, setAddColor] = useState(false);
-  const [colorFields, setColorFields] = useState<any>();
+  const [colorParent, setColorParent] = useState<Product>();
   const [variants, setVariants] = useState<any>();
   const [archivedScan, setArchivedScan] = useState<any>();
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -680,8 +903,56 @@ function Receive({
   const [warehouseForm, setWarehouseForm] = useState({ name: "", description: "" });
   const [warehouseSaving, setWarehouseSaving] = useState(false);
   const [warehouseError, setWarehouseError] = useState("");
-  const photoInput = useRef<HTMLInputElement>(null);
   const [toast, setToast] = useState("");
+  const restoredSession = useRef(false);
+
+  useEffect(() => {
+    writeStored("openboots.receiving.mode", mode);
+  }, [mode]);
+
+  useEffect(() => {
+    if (restoredSession.current) return;
+    restoredSession.current = true;
+    const storedId = readStored(RECEIVING_SESSION_KEY);
+    if (!storedId) return;
+    api<{ session: any }>(`/api/receiving/sessions/${encodeURIComponent(storedId)}`)
+      .then(({ session: restored }) => {
+        if (!restored || restored.status !== "OPEN") {
+          writeStored(RECEIVING_SESSION_KEY, null);
+          writeStored(RECEIVING_REVIEW_KEY, null);
+          return;
+        }
+        sessionRef.current = restored;
+        setSession(restored);
+        const nextReceived: Record<number, number> = {};
+        const nextProducts: Record<number, Product> = {};
+        const nextBarcodes: Record<number, string> = {};
+        let restoredTotal = 0;
+        restored.lines.forEach((line: any) => {
+          const quantity = Number(line.quantity) || 0;
+          const productId = Number(line.product.id);
+          nextReceived[productId] = quantity;
+          nextProducts[productId] = line.product;
+          nextBarcodes[productId] = line.barcode;
+          restoredTotal += quantity;
+        });
+        setReceived(nextReceived);
+        setReceivedProducts(nextProducts);
+        setReceivedBarcodes(nextBarcodes);
+        setTotal(restoredTotal);
+        if (mode === "position") {
+          const latest = restored.lines[restored.lines.length - 1];
+          if (latest) {
+            setActive({ product: latest.product, barcode: latest.barcode, quantity: latest.quantity, stock: latest.product.stock });
+            setLast({ product: latest.product, barcode: latest.barcode, quantity: latest.quantity, stock: latest.product.stock });
+          }
+        }
+      })
+      .catch(() => { writeStored(RECEIVING_SESSION_KEY, null); writeStored(RECEIVING_REVIEW_KEY, null); });
+  }, [mode]);
+  useEffect(() => {
+    writeStored(RECEIVING_REVIEW_KEY, review ? "1" : null);
+  }, [review]);
 
   useEffect(() => {
     if (
@@ -701,7 +972,7 @@ function Receive({
     try {
       if (directReceive && !locationId) throw new Error("Выберите склад для прямой приёмки.");
       const created = await post("/api/receiving/sessions", directReceive ? { locationId } : {});
-      sessionRef.current = created.session; setSession(created.session);
+      sessionRef.current = created.session; setSession(created.session); writeStored(RECEIVING_SESSION_KEY, String(created.session.id));
     } catch (e: any) { setToast(e.message); }
   };
   const scan = async (barcode: string, productId?: number) => {
@@ -734,20 +1005,12 @@ function Receive({
     }
   };
   const uploadPhoto = async (file?: File) => {
-    if (!file || !last?.product?.id) return;
-    const productId = last.product.id;
+    const productId = active?.product?.id || last?.product?.id;
+    if (!file || !productId) return;
     setPhotoUploadingFor(productId);
     setToast("");
     try {
-      const form = new FormData();
-      form.append("image", file, file.name || "product-photo.jpg");
-      const response = await fetch(`/api/products/${productId}/photo`, {
-        method: "POST",
-        body: form,
-        credentials: "include",
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.message || "Не удалось сохранить фото.");
+      const result = await uploadProductPhoto<{ product: Product }>(productId, file);
       setLast((current: any) =>
         current?.product?.id === productId
           ? { ...current, product: result.product }
@@ -758,15 +1021,39 @@ function Receive({
           ? { ...current, product: result.product }
           : current,
       );
+      setReceivedProducts((current) => ({ ...current, [productId]: result.product }));
       setToast("Фото товара сохранено.");
     } catch (error: any) {
       setToast(error.message || "Не удалось сохранить фото.");
     } finally {
       setPhotoUploadingFor(null);
-      if (photoInput.current) photoInput.current.value = "";
     }
   };
+  const addColorToReceiving = async ({ article, color, barcode, photo, idempotencyKey }: { article: string; color: string; barcode: string; photo: File; idempotencyKey: string }) => {
+    if (!colorParent || !sessionRef.current) throw new Error("Приёмка не открыта.");
+    const form = new FormData();
+    form.append("parentProductId", String(colorParent.id));
+    form.append("article", article);
+    form.append("color", color);
+    form.append("barcode", barcode);
+    form.append("image", photo, photo.name || "product-color.jpg");
+    const response = await fetch(`/api/receiving/sessions/${sessionRef.current.id}/colors`, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Не удалось добавить цвет.");
+    setActive(result); setLast(result);
+    setTotal((value) => value + result.quantity);
+    setReceived((current) => ({ ...current, [result.product.id]: (current[result.product.id] || 0) + result.quantity }));
+    setReceivedProducts((current) => ({ ...current, [result.product.id]: result.product }));
+    setReceivedBarcodes((current) => ({ ...current, [result.product.id]: result.barcode }));
+    setAddColor(false); setColorParent(undefined);
+  };
   const lines = Object.entries(received).filter(([, quantity]) => quantity > 0);
+  const historyLines = Object.entries(received);
   const editQuantity = async () => {
     const value = Number(bulk); if (!active || !Number.isInteger(value) || value < 0) return;
     try { await post(`/api/receiving/sessions/${sessionRef.current.id}/set-quantity`, { barcode: active.barcode, productId: active.product.id, quantity: value });
@@ -782,9 +1069,19 @@ function Receive({
       setTotal((current) => current + quantity - previous);
     } catch (error: any) { setToast(error.message || "Не удалось изменить количество."); }
   };
+  const openReceivedLine = (productId: number) => {
+    const product = receivedProducts[productId];
+    const barcode = receivedBarcodes[productId];
+    if (!product || !barcode) return;
+    setActive({ product, barcode });
+    setLast({ product, barcode });
+    setBulkOpen(false);
+    setBulk("");
+    setToast("");
+  };
   const setReceivingCamera = (open: boolean) => setCameraOpen(open);
   if (completed) return <section className="page receive-page"><div className="success-icon">✓</div><p className="eyebrow">ПРИЁМКА ЗАВЕРШЕНА</p><h2>Приёмка #{completed.id}</h2><p className="muted">{completed.total} коробок</p>{completed.direct ? <button className="button primary wide" onClick={() => onFinished(completed, true)}>Открыть остатки склада</button> : <><p>Что сделать дальше?</p><button className="button primary wide" onClick={() => onFinished(completed, false)}>Распределить сейчас</button><button className="button ghost wide" onClick={() => onFinished(completed, true)}>Распределить позже</button></>}</section>;
-  if (review) return <section className="page receive-page"><p className="eyebrow">СВОДКА ПРИЁМКИ</p><h2>Приёмка #{session?.id}</h2><div className="receiving-summary-total receiving-summary-total--top"><b>{total} коробок · {lines.length} позиций</b><span>Назначение: {directReceive ? locations.find((l) => l.id === locationId)?.name : "Нераспределено"}</span></div><div className="receiving-summary">{lines.map(([id, quantity]) => { const product=receivedProducts[Number(id)]; const barcode=receivedBarcodes[Number(id)]; return <article key={id} className="receiving-summary-item"><div className="receiving-summary-photo">{product?.photoUrl ? <img src={product.photoUrl} alt="" /> : <Icon icon={faBoxOpen} />}</div><div className="receiving-summary-info">{product ? <><b>{product.brand} {product.name}</b><small>{product.color || "Цвет не указан"} · Артикул: {product.article || "—"}</small>{product.sizes?.length ? <small>Размеры: {product.sizes.map((size: any) => size.size).join("–")}</small> : null}</> : <b>Принятая позиция</b>}</div><div className="receiving-summary-stepper"><button disabled={!product || quantity <= 0} onClick={() => product && adjustSummaryQuantity(product, barcode, Number(quantity) - 1)}>−</button><strong>{quantity}<small>коробок</small></strong><button disabled={!product || !barcode} onClick={() => product && adjustSummaryQuantity(product, barcode, Number(quantity) + 1)}>+</button></div></article>; })}</div><div className="receiving-summary-actions"><button className="button ghost wide" onClick={() => setReview(false)}>Назад к сканированию</button><button className="button primary wide" onClick={async () => { await post(`/api/receiving/sessions/${session.id}/complete`, {}); setCompleted({ id: session.id, total, direct: directReceive }); }}>Завершить приёмку</button></div></section>;
+  if (review) return <section className="page receive-page"><p className="eyebrow">СВОДКА ПРИЁМКИ</p><h2>Приёмка #{session?.id}</h2><div className="receiving-summary-total receiving-summary-total--top"><b>{total} коробок · {lines.length} позиций</b><span>Назначение: {directReceive ? locations.find((l) => l.id === locationId)?.name : "Нераспределено"}</span></div><div className="receiving-summary">{lines.map(([id, quantity]) => { const product=receivedProducts[Number(id)]; const barcode=receivedBarcodes[Number(id)]; return <article key={id} className="receiving-summary-item"><div className="receiving-summary-photo">{product ? <ProductThumbnail product={product} /> : <Icon icon={faBoxOpen} />}</div><div className="receiving-summary-info">{product ? <><b>{product.brand} {product.name}</b><small>{product.color || "Цвет не указан"} · Артикул: {product.article || "—"}</small>{product.sizes?.length ? <small>Размеры: {product.sizes.map((size: any) => size.size).join("–")}</small> : null}</> : <b>Принятая позиция</b>}</div><div className="receiving-summary-stepper"><button disabled={!product || quantity <= 0} onClick={() => product && adjustSummaryQuantity(product, barcode, Number(quantity) - 1)}>−</button><strong>{quantity}<small>коробок</small></strong><button disabled={!product || !barcode} onClick={() => product && adjustSummaryQuantity(product, barcode, Number(quantity) + 1)}>+</button></div></article>; })}</div><div className="receiving-summary-actions"><button className="button ghost wide" onClick={() => setReview(false)}>Назад к сканированию</button><button className="button primary wide" onClick={async () => { await post(`/api/receiving/sessions/${session.id}/complete`, {}); setCompleted({ id: session.id, total, direct: directReceive }); }}>Завершить приёмку</button></div></section>;
   return (
     <section className={`page receive-page ${session ? "receive-page--active" : ""}`}>
       {total === 0 && <button className="button ghost receive-back" onClick={onBack}><Icon icon={faArrowLeft} />Вернуться</button>}
@@ -816,35 +1113,19 @@ function Receive({
         onScan={scan}
         cameraOpen={cameraOpen}
         onCameraChange={setReceivingCamera}
+        autoArm={!active}
+        resetScanKey={active?.product?.photoUrl}
       />
       {toast && <div className="toast">{toast}</div>}
       {active && (
         <article className="receive-product-card">
-          <input
-            ref={photoInput}
-            className="visually-hidden"
-            type="file"
-            accept="image/*"
-            capture="environment"
-            onChange={(event) => uploadPhoto(event.target.files?.[0])}
-          />
           <div className="receive-product-top">
-            <div className="receive-photo">
-              {active.product.photoUrl ? (
-                <img src={active.product.photoUrl} alt={active.product.name} />
-              ) : (
-                <button
-                  className="receive-add-photo"
-                  disabled={photoUploadingFor === active.product.id}
-                  aria-label={photoUploadingFor === last.product.id ? "Сохраняем фото товара" : "Добавить фото товара"}
-                  title={photoUploadingFor === last.product.id ? "Сохраняем фото" : "Добавить фото"}
-                  onClick={() => photoInput.current?.click()}
-                >
-                  <Icon icon={faCamera} />
-                  <span>{photoUploadingFor === last.product.id ? "Сохраняем…" : "Добавить фото"}</span>
-                </button>
-              )}
-            </div>
+            <ProductPhoto
+              product={active.product}
+              className="receive-photo"
+              onCapture={uploadPhoto}
+              uploading={photoUploadingFor === active.product.id}
+            />
             <div className="receive-product-summary">
               <div className="receive-scan-meta"><span><Icon icon={faCircleCheck} /> Последний скан</span><time>только что</time></div>
               <h3>{active.product.brand} {active.product.name}</h3>
@@ -880,13 +1161,13 @@ function Receive({
               <button className="button primary" type="submit">Сохранить</button>
             </form>}
           <div className="receive-card-actions">
-            <button onClick={() => { setColorFields({ ...active.product, barcode: active.barcode, internalBarcode: "", color: "", photoUrl: undefined, allowSharedBarcode: Boolean(active.barcode) }); setAddColor(true); }}><Icon icon={faPalette} /> + Добавить цвет</button>
+            <button onClick={() => { setColorParent(active.product); setAddColor(true); }}><Icon icon={faPalette} /> + Добавить цвет</button>
             <button onClick={() => { setActive(undefined); setBulkOpen(false); }}>Следующая модель</button>
           </div>
         </article>
       )}
       {session && (
-        <div className="action-row">
+        <div className="action-row receive-finish-action">
           <button
             className="button primary"
             disabled={!session || total === 0}
@@ -897,6 +1178,42 @@ function Receive({
           </button>
         </div>
       )}
+      {session && historyLines.length > 0 && (
+        <section className="receive-history" aria-label="Отсканированные товары">
+          <div className="receive-history-head">
+            <div>
+              <p className="eyebrow">ИСТОРИЯ СЕССИИ</p>
+              <h3>Прошлые сканы</h3>
+            </div>
+            <span>{historyLines.length}</span>
+          </div>
+          <div className="receive-history-list">
+            {historyLines.map(([id, quantity]) => {
+              const product = receivedProducts[Number(id)];
+              const barcode = receivedBarcodes[Number(id)];
+              if (!product || !barcode) return null;
+              const selected = active?.product?.id === product.id;
+              return (
+                <button
+                  type="button"
+                  key={id}
+                  className={`receive-history-item${selected ? " selected" : ""}`}
+                  onClick={() => openReceivedLine(product.id)}
+                >
+                  <span className="receive-history-photo">
+                    <ProductThumbnail product={product} />
+                  </span>
+                  <span className="receive-history-info">
+                    <b>{product.brand} {product.name}</b>
+                    <small>{product.color || "Цвет не указан"} · {product.article || "Артикул не указан"}</small>
+                  </span>
+                  <strong>{quantity}<small>кор.</small></strong>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
       {unknown && (
         <UnknownBarcode
           barcode={unknown}
@@ -906,7 +1223,7 @@ function Receive({
       )}
       {variants && <div className="modal"><div className="modal-card"><p className="eyebrow">ШТРИХКОД СООТВЕТСТВУЕТ НЕСКОЛЬКИМ ЦВЕТАМ</p><h3>Выберите вариант</h3>{variants.products.map((product: Product) => <button key={product.id} className="button wide" onClick={() => { const code = variants.barcode; setVariants(undefined); scan(code, product.id); }}>{product.brand} {product.name} / {product.color}</button>)}<button className="link" onClick={() => setVariants(undefined)}>Отмена</button></div></div>}
       {archivedScan?.product && <div className="modal"><div className="modal-card"><p className="eyebrow">ТОВАР В АРХИВЕ</p><h3>{archivedScan.product.brand} {archivedScan.product.name}</h3><p className="muted">{archivedScan.product.color} · {archivedScan.product.article}</p><p>Как продолжить?</p><button className="button primary wide" onClick={async () => { try { await post(`/api/products/${archivedScan.product.id}/restore`, {}); const code=archivedScan.barcode; setArchivedScan(undefined); scan(code, archivedScan.product.id); } catch (error: any) { setToast(error.message); } }}>Восстановить с остатком</button><button className="button wide" onClick={async () => { try { await post(`/api/products/${archivedScan.product.id}/restore`, { resetStock:true, reason:"Новая приёмка после архива" }); const code=archivedScan.barcode; setArchivedScan(undefined); scan(code, archivedScan.product.id); } catch (error: any) { setToast(error.message); } }}>Начать заново с нуля</button><button className="link" onClick={() => setArchivedScan(undefined)}>Отмена</button></div></div>}
-      {addColor && colorFields && <ProductForm title="НОВЫЙ ЦВЕТ" fields={colorFields} setFields={setColorFields} text="" setText={() => {}} onCancel={() => setAddColor(false)} onSave={async () => { try { const created = await post("/api/products", colorFields); const barcode = created.product.internalBarcode || created.product.internal_barcode; const r = await post(`/api/receiving/sessions/${sessionRef.current.id}/scan`, { barcode }, { "Idempotency-Key": crypto.randomUUID() }); setActive(r); setLast(r); setTotal((v) => v + 1); setReceived((current) => ({ ...current, [r.product.id]: 1 })); setReceivedProducts((current) => ({ ...current, [r.product.id]: r.product })); setReceivedBarcodes((current) => ({ ...current, [r.product.id]: barcode })); setAddColor(false); } catch (e: any) { setToast(e.message); } }} />}
+      {addColor && colorParent && <AddColorForm parent={colorParent} onSave={addColorToReceiving} onCancel={() => { setAddColor(false); setColorParent(undefined); }} />}
       {createWarehouseOpen && <div className="modal"><div className="modal-card receive-create-warehouse"><p className="eyebrow">НОВЫЙ СКЛАД</p><h3>Добавить место хранения</h3><label>Название склада<input autoFocus value={warehouseForm.name} onChange={(event) => setWarehouseForm((current) => ({ ...current, name: event.target.value }))} placeholder="Например, Шоурум" /></label><label>Описание<input value={warehouseForm.description} onChange={(event) => setWarehouseForm((current) => ({ ...current, description: event.target.value }))} placeholder="Необязательно" /></label>{warehouseError && <div className="toast error-toast">{warehouseError}</div>}<div className="action-row"><button className="button ghost" disabled={warehouseSaving} onClick={() => setCreateWarehouseOpen(false)}>Отмена</button><button className="button primary" disabled={warehouseSaving || !warehouseForm.name.trim()} onClick={async () => { try { setWarehouseSaving(true); setWarehouseError(""); const result = await post("/api/locations", { name: warehouseForm.name.trim(), description: warehouseForm.description.trim() }); await onLocationsChanged(); setLocationId(result.location.id); setDirectReceive(true); setCreateWarehouseOpen(false); } catch (error: any) { setWarehouseError(error.message || "Не удалось добавить склад."); } finally { setWarehouseSaving(false); } }}>Добавить склад</button></div></div></div>}
     </section>
   );
@@ -923,6 +1240,7 @@ function UnknownBarcode({
 }) {
   const [mode, setMode] = useState<"choice" | "create" | "link">("choice");
   const [text, setText] = useState("");
+  const [createdProduct, setCreatedProduct] = useState<Product>();
   const [fields, setFields] = useState<any>({
     name: "",
     brand: "",
@@ -933,8 +1251,10 @@ function UnknownBarcode({
     salePrice: "",
     barcode,
   });
-  const save = async () => {
-    const r = await post("/api/products", fields);
+  const save = async (photo?: File) => {
+    const product = createdProduct || (await post<{ product: Product }>("/api/products", fields)).product;
+    if (!createdProduct) setCreatedProduct(product);
+    if (photo) await uploadProductPhoto(product.id, photo);
     await onReceive();
     onDone();
   };
@@ -998,17 +1318,31 @@ function ProductForm({
   onSave,
   onCancel,
   title = "НОВЫЙ ТОВАР",
+  photoProduct,
+  onCapturePhoto,
+  onRemovePhoto,
+  photoUploading,
 }: {
   fields: any;
   setFields: (x: any) => void;
   text: string;
   setText: (x: string) => void;
-  onSave: () => void;
+  onSave: (photo?: File) => Promise<void> | void;
   onCancel: () => void;
   title?: string;
+  photoProduct?: Product;
+  onCapturePhoto?: (file?: File) => void;
+  onRemovePhoto?: () => void;
+  photoUploading?: boolean;
 }) {
   const [ocr, setOcr] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [draftPhoto, setDraftPhoto] = useState<File>();
   const file = useRef<HTMLInputElement>(null);
+  const photoInput = useRef<HTMLInputElement>(null);
+  const draftPhotoPreview = useMemo(() => draftPhoto ? URL.createObjectURL(draftPhoto) : "", [draftPhoto]);
+  useEffect(() => () => { if (draftPhotoPreview) URL.revokeObjectURL(draftPhotoPreview); }, [draftPhotoPreview]);
   const update = (key: string, value: any) =>
     setFields({ ...fields, [key]: value });
   return (
@@ -1016,6 +1350,29 @@ function ProductForm({
       <div className="modal-card">
         <p className="eyebrow">{title}</p>
         <h3>Проверьте данные</h3>
+        {photoProduct && onCapturePhoto && (
+          <div className="product-form-photo">
+            <span>Фото товара</span>
+            <ProductPhoto
+              product={photoProduct}
+              onCapture={onCapturePhoto}
+              onRemove={onRemovePhoto}
+              uploading={photoUploading}
+            />
+          </div>
+        )}
+        {!photoProduct && <div className="product-form-photo product-form-photo--draft">
+          <div>
+            <span>Фото товара</span>
+            <small>Необязательно · JPEG, PNG или WebP, до 8 МБ.</small>
+          </div>
+          <input ref={photoInput} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={(event) => {
+            try { validateProductImage(event.target.files?.[0]); setDraftPhoto(event.target.files?.[0]); setSaveError(""); }
+            catch (error: any) { setSaveError(error.message); }
+            event.target.value = "";
+          }} />
+          {draftPhotoPreview ? <div className="product-draft-photo"><img src={draftPhotoPreview} alt="Выбранное фото товара" /><div><button type="button" onClick={() => photoInput.current?.click()}>Заменить</button><button type="button" className="danger" onClick={() => setDraftPhoto(undefined)}>Удалить</button></div></div> : <button type="button" className="product-draft-photo-add" onClick={() => photoInput.current?.click()}><Icon icon={faCamera} /> Сделать или выбрать фото</button>}
+        </div>}
         <div className="form-grid">
           <label>
             Название
@@ -1148,12 +1505,18 @@ function ProductForm({
           </button>
           <button
             className="button primary"
-            onClick={onSave}
-            disabled={!fields.name}
+            onClick={async () => {
+              setSaveError(""); setSaving(true);
+              try { await onSave(draftPhoto); }
+              catch (error: any) { setSaveError(error.message || "Не удалось сохранить товар."); }
+              finally { setSaving(false); }
+            }}
+            disabled={!fields.name || saving || photoUploading}
           >
-            Сохранить товар
+            {saving ? "Сохраняем…" : "Сохранить товар"}
           </button>
         </div>
+        {saveError && <div className="toast error-toast">{saveError}</div>}
       </div>
     </div>
   );
@@ -1849,7 +2212,7 @@ function WarehouseSettings({
 
 function App() {
   const [logged, setLogged] = useState<boolean | null>(null);
-  const [page, setPage] = useState("home");
+  const [page, setPage] = useState(() => readStored(APP_PAGE_KEY) || "home");
   const [distributionBatch, setDistributionBatch] = useState<any>();
   const [locations, setLocations] = useState<Location[]>([]);
   const [selected, setSelected] = useState<Product>();
@@ -1865,6 +2228,10 @@ function App() {
   useEffect(() => {
     if (logged) loadLocations();
   }, [logged]);
+  useEffect(() => {
+    if (page === "receive") writeStored(APP_PAGE_KEY, "receive");
+    else writeStored(APP_PAGE_KEY, null);
+  }, [page]);
   if (logged === null) return <div className="loading">Загрузка…</div>;
   if (!logged) return <Login onLogin={() => setLogged(true)} />;
   const open = async (p: Product) => {

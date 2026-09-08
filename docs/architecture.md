@@ -8,6 +8,8 @@ Deliver a small mobile-first PWA for barcode-led receiving, stock lookup, transf
 
 Production inventory authority is InvenTree through a server-side BFF. PostgreSQL and persistent media belong to the InvenTree deployment. The browser never receives InvenTree credentials. The MVP does not include accounting, CRM pipelines, payments, marketplaces, WooCommerce, or unofficial Viber automation.
 
+Future product constraint: sales will have separate wholesale and retail modes. Until that work is explicitly scoped, new product, inventory, photo, and receiving behavior must remain mode-neutral and must not assume that the current single sale price or order flow is the only sales model.
+
 ## Actors and permissions
 
 Authenticated operator: search products, scan, receive, transfer, create drafts, confirm sales, generate documents, preview/copy Viber text. Administrator: manage locations and integration configuration through InvenTree. The BFF enforces authentication and validates all input; production authorization is delegated to InvenTree permissions and the demo adapter has an equivalent operator role.
@@ -15,7 +17,9 @@ Authenticated operator: search products, scan, receive, transfer, create drafts,
 ## Core workflows
 
 - Scan: normalized camera, native `BarcodeDetector`, keyboard/HID, and manual input all produce the same barcode command.
-- Receive: a persisted session has one destination location; every scan increments one unit; explicit quantity adds N units; undo removes only the latest uncommitted event.
+- Receive: a persisted session has one destination location; every scan increments one unit; explicit quantity adds N units; undo removes only the latest uncommitted event. Refreshing the page resumes the latest open session from the server and rebuilds its counters from persisted receiving lines; completed sessions are never resumed.
+- Add color during receiving: a new color is a separate product variant that inherits the source name, brand, model, sizes, box configuration and current price. The operator supplies a distinct article, supplier barcode and required photo; an idempotent server workflow stores the photo and receives exactly one box without creating a shared-barcode variant.
+- Product photos: a photo is optional for a normal product and can be selected during creation or added later. The same authenticated API supports upload, replacement, retrieval, and explicit removal; a missing photo is distinct from a temporarily unavailable image source. Demo mode stores photo metadata and files locally, while InvenTree owns production thumbnails.
 - Unknown barcode: present create or link; linking adds an alias to an existing product and never creates a duplicate.
 - Transfer: persisted draft records source/destination and line quantities; confirmation is one inventory-core operation and rejects insufficient stock.
 - Sale: persisted DRAFT order; scans add lines without stock mutation; CONFIRMED validates current stock and deducts atomically; CANCELLED is terminal. Confirmation accepts an idempotency key and returns the same result for a retry.
@@ -27,6 +31,8 @@ Authenticated operator: search products, scan, receive, transfer, create drafts,
 ## Data and failure model
 
 The BFF stores workflow drafts, idempotency records, audit/movement records, and demo data in a persistent local database for demo mode. In production, product/stock/customer/order state is delegated to InvenTree; BFF workflow records contain only orchestration metadata and external IDs. Client state is disposable and never authoritative. Failed network calls leave a draft open, display a safe Russian message, and permit retry. A timeout on confirm is treated as unknown until the idempotency-key retry/readback resolves it.
+
+For the receive-new-color workflow, an uncertain InvenTree response after an external stock mutation is never retried automatically: the operation is held for manual reconciliation, because a duplicate physical receipt is worse than a delayed one.
 
 Inventory operations use adapter-level transactions / InvenTree stock operations. Demo mode serializes mutations in a database transaction. Concurrent confirms re-read stock under the transaction; negative stock is impossible. Duplicate confirm and duplicate transfer requests are idempotent.
 
@@ -68,3 +74,9 @@ Vitest tests cover adapter/domain/API workflows, idempotency, concurrency, docum
 ## Known limits
 
 The repository cannot run InvenTree locally until Docker or an external InvenTree instance is available. The production adapter therefore remains configuration-dependent, while the demo adapter makes all core workflows testable. Native camera/OCR quality still requires real-device validation under HTTPS; the app includes manual/keyboard fallbacks.
+
+When an InvenTree receive-new-color request has an unknown external outcome, an operator must reconcile the correlated stock transaction manually before continuing. A dedicated reconciliation UI is deferred.
+
+## Deferred follow-ups
+
+- Align the product "Close" action with InvenTree lifecycle state: closing should optionally deactivate the part in InvenTree after stock is moved or written off, while irreversible deletion remains a separate, explicitly confirmed operation.

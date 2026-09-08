@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { db, timestamp } from './db.js';
 
 const list = (value) => (Array.isArray(value) ? value : value?.results || []);
@@ -61,6 +62,12 @@ export class InvenTreeInventoryCore {
       try { return fs.readFileSync(this.tokenFile, 'utf8').trim(); } catch { return ''; }
     }
     return '';
+  }
+
+  productPhotoUrl(part) {
+    if (!part.image && !part.thumbnail) return null;
+    const version = this.photoVersions?.get(Number(part.pk));
+    return `/api/products/${part.pk}/photo${version ? `?v=${encodeURIComponent(version)}` : ''}`;
   }
 
   async request(path, options = {}) {
@@ -156,7 +163,7 @@ export class InvenTreeInventoryCore {
       internalBarcode: `INV-${String(part.pk).padStart(9, '0')}`,
       note: metadata.note,
       aliases: [],
-      photoUrl: part.image || part.thumbnail ? `/api/products/${part.pk}/photo` : null,
+      photoUrl: this.productPhotoUrl(part),
       total_stock: number(part.total_in_stock ?? part.in_stock),
     };
   }
@@ -327,6 +334,8 @@ export class InvenTreeInventoryCore {
     const form = new FormData();
     form.append('image', new Blob([file.buffer], { type: file.mimetype }), file.originalname || 'product-photo');
     await this.requestMultipart(`/api/part/thumbs/${Number(id)}/`, form);
+    if (!this.photoVersions) this.photoVersions = new Map();
+    this.photoVersions.set(Number(id), crypto.randomUUID());
     return this.getProduct(id);
   }
 
@@ -339,6 +348,13 @@ export class InvenTreeInventoryCore {
     });
     if (!response.ok) throw Object.assign(new Error(`INVENTREE_HTTP_${response.status}`), { code: 'INVENTREE_API_ERROR', status: response.status });
     return { buffer: Buffer.from(await response.arrayBuffer()), mime: response.headers.get('content-type') || 'image/jpeg' };
+  }
+
+  async removeProductPhoto(id) {
+    await this.getProduct(id);
+    await this.request(`/api/part/thumbs/${Number(id)}/`, { method: 'DELETE' });
+    this.photoVersions?.delete(Number(id));
+    return this.getProduct(id);
   }
 
   async deleteProduct(id) {

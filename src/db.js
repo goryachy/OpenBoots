@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS receiving_sessions (id INTEGER PRIMARY KEY AUTOINCREM
 CREATE TABLE IF NOT EXISTS receiving_events (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES receiving_sessions(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0), barcode TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS shared_supplier_barcodes (barcode TEXT NOT NULL, product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE, PRIMARY KEY(barcode, product_id));
 CREATE TABLE IF NOT EXISTS receiving_allocations (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL REFERENCES receiving_sessions(id) ON DELETE CASCADE, product_id INTEGER NOT NULL, location_id INTEGER NOT NULL REFERENCES locations(id), quantity INTEGER NOT NULL CHECK(quantity > 0), created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS receiving_color_operations (session_id INTEGER NOT NULL REFERENCES receiving_sessions(id) ON DELETE CASCADE, idempotency_key TEXT NOT NULL, parent_product_id INTEGER NOT NULL, request_fingerprint TEXT NOT NULL, product_id INTEGER, barcode TEXT, receive_started INTEGER NOT NULL DEFAULT 0, received INTEGER NOT NULL DEFAULT 0, response_json TEXT, created_at TEXT NOT NULL, PRIMARY KEY(session_id, idempotency_key));
 CREATE TABLE IF NOT EXISTS movements (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL REFERENCES products(id), location_id INTEGER NOT NULL REFERENCES locations(id), type TEXT NOT NULL, quantity INTEGER NOT NULL, related_id TEXT, created_at TEXT NOT NULL, user_id INTEGER REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS inventory_counts (id INTEGER PRIMARY KEY AUTOINCREMENT, location_id INTEGER NOT NULL REFERENCES locations(id), status TEXT NOT NULL DEFAULT 'OPEN', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS count_lines (count_id INTEGER NOT NULL REFERENCES inventory_counts(id) ON DELETE CASCADE, product_id INTEGER NOT NULL REFERENCES products(id), expected INTEGER NOT NULL, actual INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(count_id, product_id));
@@ -38,6 +39,11 @@ if (!productColumns.some((column) => column.name === "photo_path"))
   db.exec("ALTER TABLE products ADD COLUMN photo_path TEXT");
 if (!productColumns.some((column) => column.name === "photo_updated_at"))
   db.exec("ALTER TABLE products ADD COLUMN photo_updated_at TEXT");
+const receivingColorOperationColumns = db.prepare("PRAGMA table_info(receiving_color_operations)").all();
+if (!receivingColorOperationColumns.some((column) => column.name === "request_fingerprint"))
+  db.exec("ALTER TABLE receiving_color_operations ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''");
+if (!receivingColorOperationColumns.some((column) => column.name === "receive_started"))
+  db.exec("ALTER TABLE receiving_color_operations ADD COLUMN receive_started INTEGER NOT NULL DEFAULT 0");
 
 // Metadata is owned by OpenBoots: InvenTree locations do not expose the
 // operational capabilities needed by the mobile workflow (e.g. UNASSIGNED).

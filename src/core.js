@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { db, productPhotoDirectory, timestamp, tx } from './db.js';
 
 export const sizesFromRow = (row) => JSON.parse(row.sizes_json || '[]');
-const productView = (row) => ({ ...row, sizes: sizesFromRow(row), pairsPerBox: row.pairs_per_box ?? null, salePrice: row.sale_price_cents == null ? null : row.sale_price_cents / 100, aliases: row.aliases ? JSON.parse(row.aliases) : [], photoUrl: row.photo_path ? `/api/products/${row.id}/photo?v=${encodeURIComponent(row.photo_updated_at || '')}` : null });
+const productView = (row) => ({ ...row, sizes: sizesFromRow(row), pairsPerBox: row.pairs_per_box ?? null, salePrice: row.sale_price_cents == null ? null : row.sale_price_cents / 100, aliases: row.aliases ? JSON.parse(row.aliases) : [], photoUrl: row.photo_path ? `/api/products/${row.id}/photo?v=${encodeURIComponent(path.basename(row.photo_path))}` : null });
 const safePhotoPath = (filePath) => {
   const root = `${path.resolve(productPhotoDirectory)}${path.sep}`;
   const resolved = path.resolve(filePath || '');
@@ -45,6 +45,14 @@ export class DemoInventoryCore {
     const extension = path.extname(filePath).toLowerCase();
     const mime = extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
     return { buffer: fs.readFileSync(filePath), mime };
+  }
+  removeProductPhoto(id) {
+    const product = this.getProduct(id);
+    if (!product) throw Object.assign(new Error('NOT_FOUND'), { code: 'NOT_FOUND' });
+    const filePath = safePhotoPath(product.photo_path);
+    if (filePath) fs.rmSync(filePath, { force: true });
+    db.prepare('UPDATE products SET photo_path=NULL,photo_updated_at=? WHERE id=?').run(timestamp(), Number(id));
+    return this.getProduct(id);
   }
   searchProducts(query = '', filters = {}) {
     const like = `%${query}%`;
